@@ -1,0 +1,45 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A World of Warcraft addon for **Ascension**, a custom classless WotLK 3.3.5 server (Interface 30300). Four Lua files loaded by `Refactor.toc`:
+
+- `Refactor.lua` — quality-of-life tweaks: auto-collects transmog appearances from bags on `BAG_UPDATE` (debounced 0.5s), anchors the default tooltip to the cursor, hides the tooltip health bar, colors the tooltip border by item quality, auto-confirms BoP loot, fast auto-loot (loot window hidden via alpha), quest automation (auto-accept incl. escort confirms; auto turn-in with multi-choice rewards left open; gossip/greeting quest picking — one entry per event, turn-ins before pickups, completeness checked by quest-log title since the era gossip API lacks `isComplete`; Shift held = manual for every quest step), hides red UI error text (`UI_ERROR_MESSAGE` unregistered from `UIErrorsFrame`, forwarded back only while the flag is off; `UI_INFO_MESSAGE` untouched), mutes error speech ("I can't do that yet" voice) via the `Sound_EnableErrorSpeech` CVar — a CVar can't be read at use time, so it's written at `PLAYER_ENTERING_WORLD` and on toggle. Every tweak is gated by a flag in `RefactorCompareDB.qol` read *at use time* (toggling needs no `/reload`); flags default true and are initialized at `PLAYER_ENTERING_WORLD` (this file loads before the saved variable's owner). Exposes `RefactorQoL` (`Get`/`Set`) for the UI.
+- `RefactorCompare.lua` — the main feature: weighted-stat gear comparison. Scores items (stat × user weight, summed; weapon DPS as pseudo-stat), compares against the equipped slot(s), and shows a % verdict as a tooltip overlay, green bag arrows on upgrades, and loot-moment chat alerts. `CLASS_SPEC_WEIGHTS` holds hand-tuned default weights (ported from community Pawn strings) for each of Ascension's 22 classless "classes" × their 3-4 talent-tree specs; `AutoApplyClassSpec` (on `PLAYER_ENTERING_WORLD`/`PLAYER_TALENT_UPDATE`/`PLAYER_LEVEL_UP`) detects class + primary spec (most talent points spent; falls back to the class's first listed spec pre-level-10; talent-tab names are matched case-insensitively with underscores normalized to spaces) and seeds a `"<Class> - <Spec>"` profile from it — created once, never overwritten. Deliberate profile switches (UI/slash, recorded in `charManualProfile` by `SetActiveProfile`; the auto path uses `ActivateProfile` which doesn't mark one) pause auto-selection for that character; `/rfc auto` (or manually re-picking the auto profile) resumes it. `charProfiles` (last-active per char) must NOT be used to infer a manual choice — it records auto picks and plain logins too; conflating the two was a bug that silently disabled auto-selection for every pre-existing character. Settings persist in the `RefactorCompareDB` saved variable. Exposes `RefactorCompareShared`: trust-rule surface for the toast file (`CompareItem`, `FindBagItem`, `IsEnabled`) plus the settings surface for the UI file (`GetDB`, `STATS`, `Weights`, `ActiveProfile`, `SetActiveProfile`, `GetClassSpecs`/`SelectSpecProfile` — the Stat Weights page's spec-picker buttons, offering every spec of the class so a player can gear a different role than they're specced — `SaveProfileAs`, `DeleteProfile`, `RefreshOpenBags`, `Print`).
+- `RefactorToast.lua` — animated loot toasts (fast auto-loot skips the loot window, so this is how looted items are seen). Parses `CHAT_MSG_LOOT` self-loot lines, retries until the item is cached and in bags, then toasts icon + quality-colored name + stack count. Upgrades — judged through `RefactorCompareShared` under the same trust rules (live instance scan only, never `approx`) — get the green arrow, pulsing icon glow and % line. Settings in `RefactorCompareDB.toast`; `/rfct` still works (toggle, `unlock`/`lock`/`reset` anchor, `test`). Exposes `RefactorToastShared` (`GetDB`, `ShowAnchor`/`HideAnchor`/`IsAnchorShown`, `ResetPosition`, `Test`) for the UI.
+- `RefactorUI.lua` — the config window (global `RefactorUI`: `Toggle`, `Refresh`, `UpdateMinimapButton`) and the minimap button. Flat dark panel, sidebar nav, five pages (General / Stat Weights / Profiles / Loot / Tweaks — Stat Weights and Tweaks scroll); single accent color `0.2, 1.0, 0.6` (the `|cff33ff99` chat green). All state lives in the other files' shared tables — this file contains **no** compare/toast/QoL logic. Changes apply instantly (no OK/Apply). `/rfc` opens it via `ToggleConfig`; `RefreshConfig` in RefactorCompare forwards to `RefactorUI.Refresh` so slash-command changes update an open window. Minimap button: left-click window, right-click master toggle, drag repositions (angle in `RefactorCompareDB.minimap`). Custom widgets built on flat backdrops (`Interface\ChatFrame\ChatFrameBackground` as the solid texture); profile deletion is the only StaticPopup.
+
+## Development workflow
+
+No build, lint, or test tooling — plain Lua 5.1 (WoW 3.3.5 API) edited in place. To test: launch Ascension, then `/reload` in-game after edits. Useful in-game commands:
+
+- `/rfc` (or the minimap button) — open the config window; `/rfc debug` — print tooltip-scan detail on hover (red-line detection, per-bag arrow counts)
+- Lua errors surface in-game; there is no console
+
+Client API notes: 3.3.5 era (`GetContainerItemLink`, `hooksecurefunc`, no `C_Timer` guarantees) plus Ascension custom APIs (`C_Appearance`, `C_AppearanceCollection`, `GetContainerItemGUID`, learnable Dual Wield via `IsSpellKnown(674)`). Guard custom APIs defensively — their presence isn't guaranteed.
+
+## Critical architecture: Ascension item scaling
+
+Everything in `RefactorCompare.lua` is shaped by one fact: **Ascension scales item instances server-side, and the scaling is not encoded in the item link.**
+
+- `GetItemStats`, `SetHyperlink`, and `GetItemInfo`'s required level report the BASE item, not the scaled copy in hand. The only source of truth is scanning the real instance tooltip via `SetBagItem`/`SetInventoryItem` on the hidden `scanTip`.
+- Two copies of one item can share a link but differ in stats. Scan-cache keys must therefore be location-exact (`b:bag:slot:link`, `e:invSlot:link`), and instance entries expire after 0.5s (`INSTANCE_SCAN_TTL`) because instances can rescale outside level-ups (e.g. on equip). `h:link` base scans are static until level-up.
+- A tooltip that renders `NumLines() < 2` is a failed scan (item not in client cache): report `failed`, don't cache, show no verdict. Scoring it as zero stats produces fake "-100%" verdicts.
+- The line parser inside `ScanItem` ports Pawn's algorithm onto these instance scans: kill lines stop parsing at set-item lists (`(1/8)`), `"Stamina +5"` normalization, compound gem/enchant lines split on `", " / " & " and` (never lines starting `"`,`Equip:`,`Use:`,`Chance on hit:`), `+N All Stats` expands to the five stats, `Socket Bonus:` counts only while green (active), empty sockets feed the `SOCKET` pseudo-stat weight (default 0 — the arrow promises actual stats), and weapon DPS falls back to (min+max)/2/Speed when the printed DPS line is absent. Pawn itself scores base links (`SetHyperlink`), which Ascension scaling breaks — port its parsing, never its data source.
+
+## Trust contract (do not weaken)
+
+The green arrow is a promise: equipping never makes the character worse under current weights. Enforced invariants:
+
+- A verdict is shown only when BOTH the hovered item and the equipped item were scanned from live instances. `ScoreEquipped` returns `false` (not `nil`) for "item present but unreadable" — callers abort silently; `nil` means genuinely empty slot.
+- No data → show nothing, never guess.
+- Scores from a bare link (chat links, Bagnon cached other-character bags) carry `approx = true`: never a bag arrow, never a loot alert. (They used to display a `~` prefix; removed at the user's request — do not reintroduce a visual marker.)
+- Requirement handling: hard requirements (proficiency/class/race, detected as red tooltip text) block the verdict entirely; a red level requirement only sets `levelLocked` since the player grows into it. Red text alone isn't proof — Ascension adds its own colored lines (loot-trade timers, scaling warnings), so only requirement-shaped lines count.
+
+## Comparison flow
+
+`CompareItem` → `ScoreItem` (hovered) + `ScoreEquipped` per candidate slot. Slot logic: rings/trinkets/1H compare against the *weaker* equipped item; a 2H compares against MH+OH combined; anything held while a 2H is equipped compares against the 2H; Dual Wield gating restricts 1H weapons to main hand only. `GetTooltipSource` maps a tooltip back to its real bag slot / inventory slot (Bagnon buttons via `GetBag`, paperdoll by `Character.*Slot` name matched before the generic parent-ID bag guess — parent ID 0 would otherwise read the backpack).
+
+Bag arrows hook `ContainerFrame_Update` (stock bags) and Bagnon's `ItemSlot.Update` (post-hooked when Bagnon loads); refreshed on `UNIT_INVENTORY_CHANGED`, which also wipes instance scans.
