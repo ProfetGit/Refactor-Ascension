@@ -101,4 +101,4 @@ Issues and pull requests are welcome. If you're proposing new default stat weigh
 
 ## License
 
-No license specified yet — all rights reserved by default until one is added.
+[MIT](LICENSE) — do whatever you want with it, just keep the copyright notice.
