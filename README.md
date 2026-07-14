@@ -63,8 +63,6 @@ You can also open the config window from the **minimap button** — left-click t
 
 ## Screenshots
 
-_Images coming soon. If you'd like to contribute screenshots, see the descriptions below for what's needed._
-
 ### Gear comparison tooltip
 ![Gear comparison tooltip](docs/images/comparison-tooltip.png)
 
