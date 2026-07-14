@@ -46,9 +46,14 @@ local pool = {}
 local overflow = {} -- pending toast data waiting for a free slot
 
 -- BOTTOMLEFT coordinates of the newest toast; stacks grow upward.
+-- Default: lower right, pulled in past the right action bars and the
+-- first stock bag column (bags open at the same moment toasts fire, and
+-- toasts are mouse-enabled — overlap would steal bag-slot clicks), and
+-- above the bottom-right multibar. Live-computed so it tracks
+-- resolution/UI scale; only dragging the anchor persists coordinates.
 local function BaseAnchor()
     if tdb and tdb.x and tdb.y then return tdb.x, tdb.y end
-    return (UIParent:GetWidth() - TOAST_WIDTH) / 2, 300
+    return UIParent:GetWidth() - TOAST_WIDTH - 285, 140
 end
 
 local function PositionToast(t)
