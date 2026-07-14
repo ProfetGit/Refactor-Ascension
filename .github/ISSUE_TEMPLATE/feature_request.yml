@@ -1,0 +1,22 @@
+name: Feature Request
+description: Suggest something Refactor should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like Refactor to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is this useful?
+      description: What's the problem this solves, or the workflow it improves?
+
+  - type: textarea
+    id: weights
+    attributes:
+      label: If this is a stat weight suggestion
+      description: Include your reasoning — source theorycraft, Pawn string, etc. (see README contributing section)

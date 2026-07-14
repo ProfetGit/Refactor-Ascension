@@ -1,0 +1,62 @@
+name: Bug Report
+description: Something in Refactor is broken or behaving unexpectedly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Refactor is early — thanks for reporting. Fill in what you can.
+
+  - type: input
+    id: version
+    attributes:
+      label: Refactor version
+      description: Check the top of the `/rfc` config window, or your `Refactor.toc`
+      placeholder: "1.4"
+    validations:
+      required: true
+
+  - type: input
+    id: class-spec
+    attributes:
+      label: Class / spec
+      description: Which Ascension class and talent spec were you playing when this happened?
+      placeholder: "Deathlord - Blood"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong — a comparison verdict looked wrong, a toast didn't show, an error printed, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Hover item X in bags
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-text
+    attributes:
+      label: Lua error text (if any)
+      description: If a red error box appeared, paste the full text here
+      render: text
+
+  - type: textarea
+    id: other-addons
+    attributes:
+      label: Other addons enabled
+      description: Especially bag addons (Bagnon, etc.) — Refactor hooks into some of them directly
