@@ -959,7 +959,11 @@ local function ScanItem(link, bag, slot, invSlot, src)
     -- fake a zero-stat item — "-100% downgrade" lies. Report failure and
     -- don't cache, so the next look retries.
     result.failed = scanTip:NumLines() < 2
-    if not result.failed then
+    -- Roll scans are never cached: while the roll's item data is still
+    -- arriving the client can render a partial tooltip that passes the
+    -- NumLines check, and a cached partial would pin a wrong % for the
+    -- whole TTL. Hovers are rare enough that rescanning is free.
+    if not result.failed and not (src and src.roll) then
         if instance then result.expires = GetTime() + INSTANCE_SCAN_TTL end
         scanCache[cacheKey] = result
     end
@@ -1292,6 +1296,12 @@ end
 -- button:GetID() == slot; character paperdoll slots carry the inventory
 -- slot as their ID. The link check guards against unrelated owners whose
 -- IDs happen to point at some other item.
+--
+-- src = false is a hard block: the owner is a frame with a live scaled
+-- source (roll window, loot window, quest reward) that couldn't be
+-- confirmed yet — falling back to a bare-link scan there scores the BASE
+-- item and flashes a wrong % until the client re-renders with real data.
+-- Better to show nothing for that frame.
 local function GetTooltipSource(tooltip, link)
     local owner = tooltip:GetOwner()
     if not (owner and owner.GetID) then return end
@@ -1303,9 +1313,17 @@ local function GetTooltipSource(tooltip, link)
     -- Checked before the ID guard below: the icon frame's own ID is 0.
     local rollParent = owner:GetParent()
     local rollID = rollParent and rollParent.rollID
-    if rollID and GetLootRollItemLink
-        and GetLootRollItemLink(rollID) == link then
-        return nil, nil, nil, { roll = rollID }
+    if rollID and GetLootRollItemLink then
+        -- Match by item ID, not whole link: while the roll data is still
+        -- arriving GetLootRollItemLink can be nil or carry volatile link
+        -- fields that differ from the tooltip's own. The rollID on the
+        -- hovered frame is authoritative enough once the IDs agree.
+        local rollLink = GetLootRollItemLink(rollID)
+        if not rollLink
+            or rollLink:match("item:(%d+)") == link:match("item:(%d+)") then
+            return nil, nil, nil, { roll = rollID }
+        end
+        return nil, nil, nil, false
     end
 
     -- Corpse/chest loot window buttons: SetLootItem for the same reason.
@@ -1314,7 +1332,7 @@ local function GetTooltipSource(tooltip, link)
         if GetLootSlotLink(owner.slot) == link then
             return nil, nil, nil, { lootSlot = owner.slot }
         end
-        return
+        return nil, nil, nil, false
     end
 
     local id = owner:GetID()
@@ -1362,7 +1380,7 @@ local function GetTooltipSource(tooltip, link)
         if qlink == link then
             return nil, nil, nil, { log = qlog, type = owner.type, index = id }
         end
-        return
+        return nil, nil, nil, false
     end
 
     local parent = owner:GetParent()
@@ -1391,16 +1409,24 @@ end
 
 local function HookTooltip(tip)
     tip:HookScript("OnTooltipSetItem", function(self)
-        if self.refactorCompareDone then return end
         local _, link = self:GetItem()
-        if link then
-            self.refactorCompareDone = true
-            local bag, slot, invSlot, src = GetTooltipSource(self, link)
-            if not (bag or slot or invSlot or src) and LinkIsEquipped(link) then
-                return
-            end
-            AddCompareLine(self, link, bag, slot, invSlot, src)
+        -- Dupe guard keyed on the link (not a plain boolean): the same
+        -- render pass can fire this twice, but a genuine re-set — the
+        -- client refreshing a loot-roll/quest tooltip once the real item
+        -- data arrives — goes through OnTooltipCleared below, which
+        -- resets the key so the verdict is recomputed from live data.
+        if not link or self.refactorCompareDone == link then return end
+        self.refactorCompareDone = link
+        local bag, slot, invSlot, src = GetTooltipSource(self, link)
+        if src == false then return end -- live source pending: no guessing
+        if not (bag or slot or invSlot or src) and LinkIsEquipped(link) then
+            return
         end
+        AddCompareLine(self, link, bag, slot, invSlot, src)
+    end)
+    tip:HookScript("OnTooltipCleared", function(self)
+        self.refactorCompareDone = nil
+        HideLineArrow(self)
     end)
     tip:HookScript("OnHide", function(self)
         self.refactorCompareDone = nil

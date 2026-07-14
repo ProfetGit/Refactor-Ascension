@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.3]
+- **Auto transmog collection is now OFF by default** — collecting an appearance soulbinds the item, so the old always-on default silently turned sellable BoEs into BoP. A one-time migration disables it on existing installs too (with a chat notice); re-enable it on the Tweaks page.
+- When auto-collect is enabled it now only learns from items that are already bound (Soulbound / quest / account-bound tooltip line). A new "Include tradeable items (BoE)" sub-option restores the old fully-automatic behavior for players who want it. Items whose tooltip can't be read yet are skipped and retried on the next bag update — never bound on a guess.
+- New "Skip the learn confirmation popup" option (off by default): auto-accepts the "item will become soulbound" confirmation when manually learning an appearance with Ctrl+Shift-click.
+- Fixed the wrong compare % flashing on group-loot roll tooltips: while the rolled item's data is still arriving from the server, the verdict fell back to scoring the BASE item from its link, then jumped to the real scaled value when the client re-rendered the tooltip. Roll, loot-window, and quest-reward tooltips now show nothing until the live scaled item can be read (no more false hope), and the verdict recomputes automatically the moment the tooltip re-renders with real data.
+- Roll-item scans are no longer cached, so a partially rendered tooltip can't pin a stale % for the cache lifetime.
+
 ## [1.4.2]
 - Added a Social section to the Tweaks page (all off by default): auto-decline group invites, duels, and guild invites; auto-close trades from players who aren't friends, guildmates, or groupmates; auto-accept player resurrections in battlegrounds. Holding Shift when a request arrives handles it manually, and every auto-handled request prints a chat line naming who it came from.
 

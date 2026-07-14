@@ -1,5 +1,5 @@
 -- Refactor
--- Automatically runs your bag-scan transmog collection logic whenever your
+-- Optionally runs your bag-scan transmog collection logic whenever your
 -- bags change (i.e. after looting), instead of you having to run the macro
 -- by hand. Also anchors the default tooltip beside the cursor (right side),
 -- hides the tooltip health bar, auto-accepts bind-on-pickup loot
@@ -19,7 +19,13 @@
 local qdb -- RefactorCompareDB.qol once saved variables exist
 
 local QOL_DEFAULTS = {
-    transmog = true,       -- auto-collect appearances from bags
+    -- Collecting an appearance soulbinds the item, so auto-collect ships
+    -- OFF: silently destroying the sale value of a BoE is not an acceptable
+    -- surprise default. transmogBoE additionally gates unbound items even
+    -- when auto-collect is opted into.
+    transmog = false,      -- auto-collect appearances from bags (bound items only)
+    transmogBoE = false,   -- ...including unbound (BoE/tradeable) items
+    transmogSkipConfirm = false, -- auto-accept the manual-learn confirm popup
     cursorTooltip = true,  -- anchor default tooltip beside the cursor
     hideHealthBar = true,  -- hide the unit tooltip health bar
     qualityBorder = true,  -- color tooltip border by item quality
@@ -45,6 +51,21 @@ local function InitQol()
     qdb = RefactorCompareDB.qol
     for k, v in pairs(QOL_DEFAULTS) do
         if qdb[k] == nil then qdb[k] = v end
+    end
+    -- One-time migration: auto-collect used to default ON, and collecting
+    -- soulbinds the item — players lost sellable BoEs to a default they
+    -- never chose. Force it off once for saves from those versions; turning
+    -- it back on is an explicit choice in /rfc -> Tweaks from now on.
+    if not RefactorCompareDB.migratedTransmogOff then
+        RefactorCompareDB.migratedTransmogOff = true
+        if qdb.transmog then
+            qdb.transmog = false
+            DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor:|r auto transmog" ..
+                " collection is now OFF by default: collecting an appearance" ..
+                " soulbinds the item, which destroys BoE sale value. Re-enable" ..
+                " it in /rfc -> Tweaks (bound items only, unless you also allow" ..
+                " tradeable items).")
+        end
     end
 end
 
@@ -79,6 +100,41 @@ local pendingScan = false
 local timeSinceUpdate = 0
 local DEBOUNCE_DELAY = 0.5 -- seconds to wait after the last bag change before scanning
 
+-- Collecting an appearance soulbinds the item, so unless the player opted
+-- into transmogBoE, only items that are ALREADY bound may be auto-collected.
+-- Bind state isn't in the item link — only the instance tooltip knows — so
+-- scan the bag slot and look for a bound-item line. An unreadable tooltip
+-- (item not cached yet) means "unknown": skip it, never guess; the next
+-- BAG_UPDATE retries it.
+local bindTip = CreateFrame("GameTooltip", "RefactorBindScanTip", nil,
+    "GameTooltipTemplate")
+
+local BOUND_LINES = {}
+local function AddBoundLine(s)
+    if type(s) == "string" then BOUND_LINES[s] = true end
+end
+AddBoundLine(ITEM_SOULBOUND)         -- "Soulbound"
+AddBoundLine(ITEM_BIND_QUEST)        -- "Quest Item" (untradeable)
+AddBoundLine(ITEM_ACCOUNTBOUND)      -- account-bound variants: any of these
+AddBoundLine(ITEM_BNETACCOUNTBOUND)  -- may or may not exist on this client,
+AddBoundLine(ITEM_BIND_TO_ACCOUNT)   -- AddBoundLine skips the nils
+
+local function IsBagItemBound(bag, slot)
+    bindTip:SetOwner(UIParent, "ANCHOR_NONE")
+    bindTip:ClearLines()
+    bindTip:SetBagItem(bag, slot)
+    local numLines = bindTip:NumLines()
+    if numLines < 2 then return nil end -- failed scan: bind state unknown
+    -- The bind line sits right under the name, but Ascension can inject its
+    -- own lines (scaling notes, loot timers), so check the first few.
+    for i = 2, math.min(numLines, 6) do
+        local line = _G["RefactorBindScanTipTextLeft" .. i]
+        local text = line and line:GetText()
+        if text and BOUND_LINES[text] then return true end
+    end
+    return false
+end
+
 -- Same logic as your manual macro, just wrapped in a function so it can be
 -- triggered automatically instead of typed in.
 local function ScanBagsForTransmog()
@@ -87,6 +143,7 @@ local function ScanBagsForTransmog()
     if not c or not C_Appearance then
         return -- defensive: bail out quietly if these APIs aren't available
     end
+    local includeUnbound = Qol("transmogBoE")
 
     for b = 0, 4 do
         local numSlots = GetContainerNumSlots(b)
@@ -94,7 +151,8 @@ local function ScanBagsForTransmog()
             local itemID = GetContainerItemID(b, s)
             if itemID then
                 local appearanceID = C_Appearance.GetItemAppearanceID(itemID)
-                if appearanceID and not c.IsAppearanceCollected(appearanceID) then
+                if appearanceID and not c.IsAppearanceCollected(appearanceID)
+                    and (includeUnbound or IsBagItemBound(b, s)) then
                     local itemGUID = GetContainerItemGUID(b, s)
                     if itemGUID then
                         c.CollectItemAppearance(itemGUID)
@@ -104,6 +162,39 @@ local function ScanBagsForTransmog()
         end
     end
 end
+
+--------------------------------------------------------------------------
+-- Transmog: optionally skip the "item will become soulbound" confirmation
+-- shown when manually learning an appearance (Ctrl+Shift-click). The
+-- dialog's name is unknown (it lives in Ascension's packed FrameXML), so
+-- match on the dialog TEXT instead and accept it in the same frame it was
+-- shown — before it's ever drawn. If Ascension's confirm isn't a
+-- StaticPopup this hook simply never fires.
+--------------------------------------------------------------------------
+
+local function IsCollectConfirmDialog(which)
+    local dialog = StaticPopupDialogs and StaticPopupDialogs[which]
+    local text = dialog and dialog.text
+    if type(text) ~= "string" then return false end
+    text = string.lower(text)
+    return (string.find(text, "collect the appearance", 1, true)
+        or string.find(text, "become soulbound", 1, true)) and true or false
+end
+
+hooksecurefunc("StaticPopup_Show", function(which)
+    if not Qol("transmogSkipConfirm") then return end
+    if not IsCollectConfirmDialog(which) then return end
+    for i = 1, 4 do
+        local frame = _G["StaticPopup" .. i]
+        if frame and frame:IsShown() and frame.which == which then
+            local accept = _G["StaticPopup" .. i .. "Button1"]
+            if accept and accept:IsEnabled() then
+                accept:Click() -- runs OnAccept and hides the popup
+            end
+            return
+        end
+    end
+end)
 
 f:SetScript("OnEvent", function(self, event)
     if event == "PLAYER_ENTERING_WORLD" then

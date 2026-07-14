@@ -100,7 +100,10 @@ end
 
 -- Checkbox row: flat box + accent fill when checked, label, optional
 -- one-line gray description. The whole row is the click target.
-local function MakeCheck(parent, x, y, width, label, desc, get, set, tip)
+-- isEnabled (optional): predicate for a sub-option gated by another flag.
+-- While false the row dims and ignores clicks, but its saved value is left
+-- untouched so it comes back as-was when the parent is re-enabled.
+local function MakeCheck(parent, x, y, width, label, desc, get, set, tip, isEnabled)
     local row = CreateFrame("Button", nil, parent)
     row:SetPoint("TOPLEFT", x, y)
     row:SetWidth(width)
@@ -131,14 +134,19 @@ local function MakeCheck(parent, x, y, width, label, desc, get, set, tip)
         sub:SetText(desc)
     end
 
+    row.enabled = true
     row.Refresh = function(self)
         if get() then mark:Show() else mark:Hide() end
+        self.enabled = not isEnabled or (isEnabled() and true or false)
+        self:SetAlpha(self.enabled and 1 or 0.4)
     end
     row:SetScript("OnClick", function(self)
+        if not self.enabled then return end
         set(not get())
         self:Refresh()
     end)
-    row:SetScript("OnEnter", function()
+    row:SetScript("OnEnter", function(self)
+        if not self.enabled then return end
         box:SetBackdropBorderColor(ACCENT[1], ACCENT[2], ACCENT[3], 0.8)
     end)
     row:SetScript("OnLeave", function()
@@ -780,10 +788,16 @@ local function BuildTweaksPage()
     child:SetWidth(INNER_W)
     scroll:SetScrollChild(child)
 
-    local function QolCheck(x, y, label, desc, key)
-        return p:Track(MakeCheck(child, x, y, INNER_W, label, desc,
+    -- refreshPage: re-refresh the whole page after toggling, so rows whose
+    -- isEnabled predicate depends on this flag dim/undim immediately.
+    local function QolCheck(x, y, label, desc, key, isEnabled, refreshPage)
+        return p:Track(MakeCheck(child, x, y, INNER_W - x, label, desc,
             function() return q and q.Get(key) end,
-            function(v) if q then q.Set(key, v) end end))
+            function(v)
+                if q then q.Set(key, v) end
+                if refreshPage then RefactorUI.Refresh() end
+            end,
+            nil, isEnabled))
     end
 
     local y = Section(child, "Looting", 0, 0, INNER_W)
@@ -796,8 +810,16 @@ local function BuildTweaksPage()
         "autoConfirmBoP")
     y = y - 40
     QolCheck(0, y, "Auto-collect transmog appearances",
-        "Learns uncollected appearances from bag items automatically.",
-        "transmog")
+        "Learns appearances from soulbound bag items automatically.",
+        "transmog", nil, true)
+    y = y - 40
+    QolCheck(20, y, "Include tradeable items (BoE)",
+        "Also learns from unbound items — collecting soulbinds them.",
+        "transmogBoE", function() return q and q.Get("transmog") end)
+    y = y - 40
+    QolCheck(0, y, "Skip the learn confirmation popup",
+        "Auto-accepts the soulbound warning when you Ctrl+Shift-click to learn.",
+        "transmogSkipConfirm")
     y = y - 44
 
     y = Section(child, "Questing", 0, y - 8, INNER_W)

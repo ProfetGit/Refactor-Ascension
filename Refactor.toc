@@ -1,8 +1,8 @@
-## Interface: 30300
+﻿## Interface: 30300
 ## Title: Refactor
-## Notes: Auto-collects transmog appearances from your bags on loot, anchors tooltips beside the cursor, and hides the tooltip health bar.
+## Notes: Weighted-stat gear comparison with loot toasts, plus quality-of-life tweaks: quest automation, fast loot, tooltip tweaks, and opt-in transmog auto-collection.
 ## Author: ProfetGit
-## Version: 1.4.2
+## Version: 1.4.3
 ## SavedVariables: RefactorCompareDB
 
 Refactor.lua
