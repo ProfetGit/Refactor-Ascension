@@ -10,12 +10,8 @@
 -- Hover a toast to pause its fade and see the item tooltip; click to
 -- dismiss it; shift-click to link the item in chat.
 --
--- Slash commands:
---   /rfct           toggle loot toasts on/off
---   /rfct unlock    show a drag handle to reposition the toasts
---   /rfct lock      hide the drag handle and save the position
---   /rfct reset     restore the default position
---   /rfct test      show a sample toast
+-- All settings (on/off, anchor, test) live in the Loot page of the
+-- config window (/rfc or /refactor) via RefactorToastShared.
 
 local TOAST_WIDTH = 260
 local TOAST_HEIGHT = 44
@@ -451,7 +447,7 @@ local function ShowAnchor()
         a:SetBackdropBorderColor(ACCENT[1], ACCENT[2], ACCENT[3], 0.9)
         local label = a:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         label:SetPoint("CENTER")
-        label:SetText("Loot toasts — drag me\n|cff999999/rfct lock to save|r")
+        label:SetText("Loot toasts — drag me\n|cff999999click Lock in the Loot page to save|r")
         a:SetMovable(true)
         a:EnableMouse(true)
         a:RegisterForDrag("LeftButton")
@@ -496,34 +492,6 @@ RefactorToastShared = {
     end,
     Test = SpawnTestToasts,
 }
-
---------------------------------------------------------------------------
--- Slash commands
---------------------------------------------------------------------------
-
-SLASH_REFACTORTOAST1 = "/rfct"
-SlashCmdList.REFACTORTOAST = function(msg)
-    local cmd = (msg or ""):match("^(%S*)"):lower()
-    if not tdb then return end
-
-    if cmd == "" or cmd == "toggle" then
-        tdb.enabled = not tdb.enabled
-        Print("loot toasts " .. (tdb.enabled and "|cff00ff00on|r" or "|cffff4040off|r") .. ".")
-    elseif cmd == "unlock" then
-        ShowAnchor()
-        Print("drag the green box, then /rfct lock.")
-    elseif cmd == "lock" then
-        if anchorFrame then anchorFrame:Hide() end
-        Print("toast position saved.")
-    elseif cmd == "reset" then
-        RefactorToastShared.ResetPosition()
-        Print("toast position reset.")
-    elseif cmd == "test" then
-        SpawnTestToasts()
-    else
-        Print("usage: /rfct (toggle) | unlock | lock | reset | test")
-    end
-end
 
 --------------------------------------------------------------------------
 -- Init & events

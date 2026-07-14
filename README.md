@@ -51,13 +51,11 @@ A clean, single-panel UI for everything above — no `/reload` required, changes
 
 | Command | Effect |
 |---|---|
-| `/rfc` | Open the Refactor config window |
+| `/refactor` or `/rfc` | Open the Refactor config window |
 | `/rfc auto` | Resume automatic spec-based profile selection |
 | `/rfc debug` | Print tooltip-scan debug info on hover |
-| `/rfct` | Toggle loot toasts |
-| `/rfct unlock` / `lock` | Move / lock the loot toast anchor |
-| `/rfct reset` | Reset the loot toast anchor position |
-| `/rfct test` | Preview a sample loot toast |
+
+Loot toast on/off, anchor position, and a preview toast are all on the **Loot** page of the config window.
 
 You can also open the config window from the **minimap button** — left-click to open, right-click for a quick master toggle, drag to reposition.
 

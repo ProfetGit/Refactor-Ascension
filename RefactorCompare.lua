@@ -33,7 +33,7 @@
 -- switched to and that's what's active when it logs back in — picking a
 -- profile on one alt doesn't silently change what another alt sees.
 --
--- Slash commands:
+-- Slash commands (/rfc and /refactor are interchangeable):
 --   /rfc                     open/close the config panel
 --   /rfc toggle              enable/disable the whole feature
 --   /rfc bagicons            toggle the green upgrade arrow on bag item slots
@@ -1897,6 +1897,7 @@ end
 
 SLASH_REFACTORCOMPARE1 = "/rfc"
 SLASH_REFACTORCOMPARE2 = "/refactorcompare"
+SLASH_REFACTORCOMPARE3 = "/refactor"
 SlashCmdList.REFACTORCOMPARE = function(msg)
     msg = msg or ""
     local cmd, rest = msg:match("^(%S*)%s*(.-)$")
