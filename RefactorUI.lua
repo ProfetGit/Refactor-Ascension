@@ -814,6 +814,28 @@ local function BuildTweaksPage()
         "questGossip")
     y = y - 44
 
+    y = Section(child, "Social", 0, y - 8, INNER_W)
+    QolCheck(0, y, "Decline group invites",
+        "Declines every party invite. Hold Shift as it arrives to accept manually.",
+        "declineInvites")
+    y = y - 40
+    QolCheck(0, y, "Decline duels",
+        "Cancels duel requests. Hold Shift as it arrives to duel anyway.",
+        "declineDuels")
+    y = y - 40
+    QolCheck(0, y, "Decline guild invites",
+        "Declines guild recruitment invites. Hold Shift as it arrives to consider it.",
+        "declineGuilds")
+    y = y - 40
+    QolCheck(0, y, "Block trades from strangers",
+        "Closes trades unless the other player is a friend, guildmate, or in your group.",
+        "declineTrades")
+    y = y - 40
+    QolCheck(0, y, "Auto-resurrect in battlegrounds",
+        "Instantly accepts resurrections from players while in a battleground.",
+        "autoResBG")
+    y = y - 44
+
     y = Section(child, "Tooltips", 0, y - 8, INNER_W)
     QolCheck(0, y, "Anchor tooltip at the cursor",
         "The default tooltip follows the mouse instead of the corner.",

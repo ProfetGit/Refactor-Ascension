@@ -30,6 +30,13 @@ local QOL_DEFAULTS = {
     questGossip = true,    -- auto-pick quest entries from NPC gossip menus
     hideErrorText = true,  -- hide red UI error text ("Ability is not ready yet")
     muteErrorSpeech = true,-- silence "I can't do that yet" voice errors
+    -- Social auto-declines ship off: silently refusing invites/trades is a
+    -- choice the player should make, not a surprise default.
+    declineInvites = false,-- decline every party invite
+    declineDuels = false,  -- cancel duel requests
+    declineGuilds = false, -- decline guild invites
+    declineTrades = false, -- close trades from non-friend/guild/group players
+    autoResBG = false,     -- accept player resurrections inside battlegrounds
 }
 
 local function InitQol()
@@ -102,6 +109,9 @@ f:SetScript("OnEvent", function(self, event)
     if event == "PLAYER_ENTERING_WORLD" then
         InitQol() -- saved variables (and RefactorCompare's init) are done by now
         ApplyErrorSpeech()
+        -- The friends list is empty client-side until the server sends it;
+        -- request it now so the trade-window whitelist can check it.
+        ShowFriends()
     end
     -- BAG_UPDATE fires whenever any bag's contents change, which covers
     -- looting, vendoring, mailing, etc. We don't rely on a more specific
@@ -394,6 +404,75 @@ quest:SetScript("OnEvent", function(self, event, arg1)
             -- leave the window open for the player to pick.
             GetQuestReward(choices)
         end
+    end
+end)
+
+--------------------------------------------------------------------------
+-- Social: auto-decline party invites, duels, guild invites and stranger
+-- trades; auto-accept player resurrections in battlegrounds.
+-- Hold Shift as the request arrives to handle it manually.
+--------------------------------------------------------------------------
+
+-- Every auto-handled request gets one chat line so the player still knows
+-- it happened — the popups are hidden the same frame they'd appear.
+local function Announce(msg)
+    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor:|r " .. msg)
+end
+
+local function IsFriend(name)
+    if not name then return false end
+    for i = 1, GetNumFriends() do
+        if GetFriendInfo(i) == name then return true end
+    end
+    return false
+end
+
+local social = CreateFrame("Frame")
+social:RegisterEvent("PARTY_INVITE_REQUEST")
+social:RegisterEvent("DUEL_REQUESTED")
+social:RegisterEvent("GUILD_INVITE_REQUEST")
+social:RegisterEvent("TRADE_SHOW")
+social:RegisterEvent("RESURRECT_REQUEST")
+
+social:SetScript("OnEvent", function(self, event, arg1, arg2)
+    if IsShiftKeyDown() then return end -- manual override for every request
+
+    if event == "PARTY_INVITE_REQUEST" then
+        if not Qol("declineInvites") then return end
+        DeclineGroup()
+        StaticPopup_Hide("PARTY_INVITE")
+        Announce("declined group invite from " .. (arg1 or "someone"))
+    elseif event == "DUEL_REQUESTED" then
+        if not Qol("declineDuels") then return end
+        CancelDuel()
+        StaticPopup_Hide("DUEL_REQUESTED")
+        Announce("declined duel from " .. (arg1 or "someone"))
+    elseif event == "GUILD_INVITE_REQUEST" then
+        -- arg1 = inviter, arg2 = guild name.
+        if not Qol("declineGuilds") then return end
+        DeclineGuild()
+        StaticPopup_Hide("GUILD_INVITE")
+        Announce("declined invite to <" .. (arg2 or "?") .. "> from " .. (arg1 or "someone"))
+    elseif event == "TRADE_SHOW" then
+        if not Qol("declineTrades") then return end
+        -- "NPC" is the trade partner while the window is open. Friends,
+        -- guildmates and groupmates trade freely; only strangers are blocked.
+        local partner = UnitName("NPC")
+        if IsFriend(partner) or UnitIsInMyGuild("NPC")
+            or UnitInParty("NPC") or UnitInRaid("NPC") then return end
+        CloseTrade()
+        Announce("closed trade with " .. (partner or "someone"))
+    elseif event == "RESURRECT_REQUEST" then
+        -- arg1 = who's offering. Battlegrounds only — accepting a dungeon
+        -- combat-res is a timing decision that stays with the player.
+        if not Qol("autoResBG") then return end
+        local _, instanceType = IsInInstance()
+        if instanceType ~= "pvp" then return end
+        AcceptResurrect()
+        StaticPopup_Hide("RESURRECT")
+        StaticPopup_Hide("RESURRECT_NO_SICKNESS")
+        StaticPopup_Hide("RESURRECT_NO_TIMER")
+        Announce("accepted resurrection from " .. (arg1 or "someone"))
     end
 end)
 

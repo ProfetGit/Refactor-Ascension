@@ -2,7 +2,7 @@
 ## Title: Refactor
 ## Notes: Auto-collects transmog appearances from your bags on loot, anchors tooltips beside the cursor, and hides the tooltip health bar.
 ## Author: ProfetGit
-## Version: 1.4.1
+## Version: 1.4.2
 ## SavedVariables: RefactorCompareDB
 
 Refactor.lua

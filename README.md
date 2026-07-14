@@ -33,6 +33,8 @@ All individually toggleable:
 - Auto-confirms Bind-on-Pickup loot prompts
 - Quest automation — auto-accept, auto turn-in, gossip/greeting quest picking (hold **Shift** to fall back to manual for any step)
 - Hides red UI error text and mutes the "I can't do that yet" error voice line
+- Auto-declines group invites, duels, guild invites, and trades from strangers (all off by default; hold **Shift** to handle one manually) — each decline prints a chat line so you know it happened
+- Auto-accepts player resurrections in battlegrounds (off by default)
 
 ### 🖥️ In-Game Config Window
 A clean, single-panel UI for everything above — no `/reload` required, changes apply instantly.
