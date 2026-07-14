@@ -4,8 +4,8 @@
 -- toast — icon, quality-colored name, stack count — that slides in, holds
 -- and fades out. If RefactorCompare judges the item an upgrade (same
 -- trust rules as the bag arrows: live instance scan only, never a
--- bare-link estimate), the toast carries the green arrow, a pulsing icon
--- glow, and the % verdict as its second line.
+-- bare-link estimate), the toast carries a softly pulsing green arrow
+-- and the % verdict as its second line.
 --
 -- Hover a toast to pause its fade and see the item tooltip; click to
 -- dismiss it; shift-click to link the item in chat.
@@ -17,12 +17,12 @@
 --   /rfct reset     restore the default position
 --   /rfct test      show a sample toast
 
-local TOAST_WIDTH = 262
-local TOAST_HEIGHT = 52
-local TOAST_GAP = 6
+local TOAST_WIDTH = 260
+local TOAST_HEIGHT = 44
+local TOAST_GAP = 4
 local MAX_ACTIVE = 5          -- on-screen at once; extras queue up
 local SLIDE_IN_TIME = 0.25
-local SLIDE_IN_DIST = 40      -- pixels the toast slides in from the right
+local SLIDE_IN_DIST = 24      -- pixels the toast slides in from the right
 local HOLD_TIME = 3.5
 local HOLD_TIME_UPGRADE = 6   -- upgrades are the whole point — linger longer
 local FADE_OUT_TIME = 0.8
@@ -32,6 +32,8 @@ local ARROW_WAIT_RETRIES = 10 -- keep waiting for a bag instance until this many
 
 local ARROW_TEXTURE = "Interface\\AddOns\\Refactor\\arrow"
 local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
+local SOLID = "Interface\\ChatFrame\\ChatFrameBackground" -- tintable solid
+local ACCENT = { 0.20, 1.00, 0.60 } -- the addon's chat-message green
 
 local tdb -- RefactorCompareDB.toast after ADDON_LOADED
 
@@ -100,8 +102,8 @@ end
 local function ToastOnUpdate(t, elapsed)
     t.elapsed = t.elapsed + elapsed
 
-    if t.upgrade and t.glow:IsShown() then
-        t.glow:SetAlpha(0.35 + 0.25 * math.sin(GetTime() * 5))
+    if t.upgrade and t.arrow:IsShown() then
+        t.arrow:SetAlpha(0.7 + 0.3 * math.sin(GetTime() * 4))
     end
 
     if t.phase == "in" then
@@ -170,60 +172,91 @@ local function ToastOnClick(t)
     end
 end
 
+-- Width of the fully-opaque part of the scrim; the rest fades to zero.
+-- Covers the icon and the first words of the name so text stays readable
+-- over bright terrain; long names ride the fade (font shadows carry them).
+local SCRIM_SOLID_W = 88
+
 local function CreateToast()
     local t = CreateFrame("Button", nil, UIParent)
     t:SetWidth(TOAST_WIDTH)
     t:SetHeight(TOAST_HEIGHT)
     t:SetFrameStrata("HIGH")
-    t:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 16,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 },
-    })
-    t:SetBackdropColor(0.05, 0.05, 0.08, 0.92)
+
+    -- Borderless banner, classic zone-text style: black scrim solid on
+    -- the left, fading to nothing toward the right. No box, no border.
+    t.bgSolid = t:CreateTexture(nil, "BACKGROUND")
+    t.bgSolid:SetTexture(SOLID)
+    t.bgSolid:SetPoint("TOPLEFT")
+    t.bgSolid:SetPoint("BOTTOMLEFT")
+    t.bgSolid:SetWidth(SCRIM_SOLID_W)
+    t.bgSolid:SetVertexColor(0, 0, 0, 0.5)
+
+    t.bgFade = t:CreateTexture(nil, "BACKGROUND")
+    t.bgFade:SetTexture(SOLID)
+    t.bgFade:SetPoint("TOPLEFT", t.bgSolid, "TOPRIGHT", 0, 0)
+    t.bgFade:SetPoint("BOTTOMRIGHT")
+    t.bgFade:SetGradientAlpha("HORIZONTAL", 0, 0, 0, 0.5, 0, 0, 0, 0)
+
+    -- Quality-colored hairlines top and bottom, fading with the banner —
+    -- the old quality border reduced to a whisper.
+    t.lineTop = t:CreateTexture(nil, "BORDER")
+    t.lineTop:SetTexture(SOLID)
+    t.lineTop:SetHeight(1)
+    t.lineTop:SetPoint("TOPLEFT")
+    t.lineTop:SetPoint("TOPRIGHT")
+
+    t.lineBottom = t:CreateTexture(nil, "BORDER")
+    t.lineBottom:SetTexture(SOLID)
+    t.lineBottom:SetHeight(1)
+    t.lineBottom:SetPoint("BOTTOMLEFT")
+    t.lineBottom:SetPoint("BOTTOMRIGHT")
+
+    t.SetQualityColor = function(self, r, g, b)
+        self.lineTop:SetGradientAlpha("HORIZONTAL", r, g, b, 0.9, r, g, b, 0)
+        self.lineBottom:SetGradientAlpha("HORIZONTAL", r, g, b, 0.9, r, g, b, 0)
+    end
 
     t.icon = t:CreateTexture(nil, "ARTWORK")
-    t.icon:SetWidth(36)
-    t.icon:SetHeight(36)
-    t.icon:SetPoint("LEFT", 9, 0)
+    t.icon:SetWidth(30)
+    t.icon:SetHeight(30)
+    t.icon:SetPoint("LEFT", 4, 0)
     t.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93) -- trim the stock icon border
 
-    -- Additive ring behind the icon, pulsed in OnUpdate for upgrades.
-    t.glow = t:CreateTexture(nil, "OVERLAY")
-    t.glow:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
-    t.glow:SetBlendMode("ADD")
-    t.glow:SetWidth(62)
-    t.glow:SetHeight(62)
-    t.glow:SetPoint("CENTER", t.icon, "CENTER", 0, 0)
-    t.glow:SetVertexColor(0, 1, 0)
-    t.glow:Hide()
+    -- Blizzard's own slot ring (action-button/bag border) over the icon,
+    -- so the item art sits in a stock-looking slot. The 64px art is drawn
+    -- at 64/36 of the icon size, like ActionButton does.
+    t.iconBorder = t:CreateTexture(nil, "OVERLAY")
+    t.iconBorder:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+    t.iconBorder:SetWidth(53)
+    t.iconBorder:SetHeight(53)
+    t.iconBorder:SetPoint("CENTER", t.icon, "CENTER", 0, -1)
 
-    t.count = t:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
-    t.count:SetPoint("BOTTOMRIGHT", t.icon, "BOTTOMRIGHT", 0, 1)
+    t.count = t:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+    t.count:SetPoint("BOTTOMRIGHT", t.icon, "BOTTOMRIGHT", 1, 0)
 
     t.name = t:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    t.name:SetPoint("TOPLEFT", t.icon, "TOPRIGHT", 8, -2)
-    t.name:SetWidth(TOAST_WIDTH - 82)
+    t.name:SetPoint("TOPLEFT", t.icon, "TOPRIGHT", 9, -1)
+    t.name:SetWidth(TOAST_WIDTH - 69)
     t.name:SetHeight(13) -- clip to one line instead of wrapping
     t.name:SetJustifyH("LEFT")
 
     t.sub = t:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    t.sub:SetPoint("TOPLEFT", t.name, "BOTTOMLEFT", 0, -4)
-    t.sub:SetWidth(TOAST_WIDTH - 82)
+    t.sub:SetPoint("TOPLEFT", t.name, "BOTTOMLEFT", 0, -3)
+    t.sub:SetWidth(TOAST_WIDTH - 69)
     t.sub:SetHeight(11)
     t.sub:SetJustifyH("LEFT")
 
     t.arrow = t:CreateTexture(nil, "OVERLAY")
-    t.arrow:SetWidth(15)
-    t.arrow:SetHeight(15)
-    t.arrow:SetPoint("TOPRIGHT", -7, -7)
+    t.arrow:SetWidth(12)
+    t.arrow:SetHeight(12)
+    t.arrow:SetPoint("RIGHT", -8, 0)
     if t.arrow:SetTexture(ARROW_TEXTURE) then
-        t.arrow:SetVertexColor(0, 1, 0)
+        t.arrow:SetVertexColor(ACCENT[1], ACCENT[2], ACCENT[3])
     else
-        t.arrow:SetTexture(0, 1, 0, 0.9)
-        t.arrow:SetWidth(10)
-        t.arrow:SetHeight(10)
+        t.arrow:SetTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.9)
+        t.arrow:SetWidth(8)
+        t.arrow:SetHeight(8)
     end
     t.arrow:Hide()
 
@@ -254,10 +287,10 @@ SpawnToast = function(data)
     local color = q and ITEM_QUALITY_COLORS[q]
     if color then
         t.name:SetTextColor(color.r, color.g, color.b)
-        t:SetBackdropBorderColor(color.r, color.g, color.b)
+        t:SetQualityColor(color.r, color.g, color.b)
     else
         t.name:SetTextColor(1, 1, 1)
-        t:SetBackdropBorderColor(1, 1, 1)
+        t:SetQualityColor(0.5, 0.5, 0.5)
     end
     t.name:SetText(data.name or "?")
 
@@ -269,15 +302,14 @@ SpawnToast = function(data)
         else
             t.sub:SetText(string.format("+%.0f%% upgrade%s", u.pct or 0, lockNote))
         end
-        t.sub:SetTextColor(0, 1, 0)
+        t.sub:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3])
+        t.arrow:SetAlpha(1)
         t.arrow:Show()
-        t.glow:Show()
         t.holdTime = HOLD_TIME_UPGRADE
     else
         t.sub:SetText(data.subText or "Looted")
-        t.sub:SetTextColor(0.6, 0.6, 0.6)
+        t.sub:SetTextColor(0.55, 0.55, 0.60)
         t.arrow:Hide()
-        t.glow:Hide()
         t.holdTime = HOLD_TIME
     end
 
@@ -414,14 +446,9 @@ local function ShowAnchor()
         a:SetWidth(TOAST_WIDTH)
         a:SetHeight(TOAST_HEIGHT)
         a:SetFrameStrata("DIALOG")
-        a:SetBackdrop({
-            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            tile = true, tileSize = 16, edgeSize = 16,
-            insets = { left = 4, right = 4, top = 4, bottom = 4 },
-        })
-        a:SetBackdropColor(0, 0.8, 0, 0.3)
-        a:SetBackdropBorderColor(0, 1, 0)
+        a:SetBackdrop({ bgFile = SOLID, edgeFile = SOLID, edgeSize = 1 })
+        a:SetBackdropColor(ACCENT[1], ACCENT[2], ACCENT[3], 0.12)
+        a:SetBackdropBorderColor(ACCENT[1], ACCENT[2], ACCENT[3], 0.9)
         local label = a:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         label:SetPoint("CENTER")
         label:SetText("Loot toasts — drag me\n|cff999999/rfct lock to save|r")

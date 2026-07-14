@@ -288,12 +288,6 @@ local CLASS_SPEC_WEIGHTS = {
         { name = "Riftblade",    weights = { AGI = 1, SP = 0.8, INT = 0.4, AP = 0.5, DPS = 8, HIT = 0.9, CRIT = 0.7, HASTE = 0.6, EXP = 0.8, STA = 0.4, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Conjuration",  weights = { SP = 1, INT = 0.8, HIT = 0.9, HASTE = 0.7, CRIT = 0.6, SPI = 0.4, STA = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
     },
-    SON_OF_ARUGAL = {
-        { name = "Ferocity",    weights = { AGI = 1, AP = 0.5, DPS = 8, HIT = 0.9, CRIT = 0.7, HASTE = 0.6, EXP = 0.8, STA = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Pack_Leader", weights = { STA = 1.5, AGI = 0.8, DODGE = 0.9, DEF = 0.8, ARMOR = 0.02, PARRY = 0.4, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Dark_Magic",  weights = { SP = 1, INT = 0.8, AGI = 0.5, HIT = 0.9, HASTE = 0.7, CRIT = 0.6, STA = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Sanguine",    weights = { SP = 1, INT = 0.8, SPI = 0.7, HASTE = 0.6, CRIT = 0.5, STA = 0.5, MP5 = 0.4, SOCKET = 20, UNKNOWN = 0.1 } },
-    },
     STARCALLER = {
         { name = "Moon_Priest", weights = { INT = 1, SP = 0.8, SPI = 0.7, HASTE = 0.6, CRIT = 0.5, MP5 = 0.5, STA = 0.4, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Sentinel",    weights = { AGI = 1, INT = 0.5, AP = 0.5, DPS = 8, HIT = 0.9, CRIT = 0.7, HASTE = 0.6, STA = 0.4, SOCKET = 20, UNKNOWN = 0.1 } },
@@ -1187,32 +1181,107 @@ end
 -- the percentage plus red/green — even without the arrow icon.
 local ARROW_TEXTURE = "Interface\\AddOns\\Refactor\\arrow" -- still used by bag-slot arrows below
 
+-- Anchors a tinted arrow texture just left of the given fontstring. Anchored
+-- to that specific text (not the tooltip frame corner, as the old overlay
+-- was) so it can never collide with a long item title above it. `down`
+-- flips the (up-pointing) source art vertically for the downgrade case —
+-- there's only the one arrow.tga asset, no separate down/red variant.
+local function ShowLineArrow(tooltip, fontString, r, g, b, down)
+    if not fontString then return end
+    local arrow = tooltip.refactorLineArrow
+    if not arrow then
+        arrow = tooltip:CreateTexture(nil, "OVERLAY")
+        tooltip.refactorLineArrow = arrow
+    end
+    arrow:ClearAllPoints()
+    if arrow:SetTexture(ARROW_TEXTURE) then
+        arrow:SetVertexColor(r, g, b)
+    else
+        arrow:SetTexture(r, g, b, 0.9)
+    end
+    if down then
+        arrow:SetTexCoord(0, 1, 1, 0)
+    else
+        arrow:SetTexCoord(0, 1, 0, 1)
+    end
+    arrow:SetWidth(12)
+    arrow:SetHeight(12)
+    arrow:SetPoint("RIGHT", fontString, "LEFT", -2, 0)
+    arrow:Show()
+end
+
+local function HideLineArrow(tooltip)
+    if tooltip.refactorLineArrow then tooltip.refactorLineArrow:Hide() end
+end
+
+-- Rows whose right column is reliably blank, tried in order so the verdict
+-- lands in roughly the same place regardless of item type: Durability
+-- covers weapons/armor, but plenty of gear (rings, trinkets, necks) has
+-- none of those and only ever shows "Requires Level N" — which every
+-- piece of equipment prints (even at level 1, per Blizzard's own tooltip
+-- code), so it's the reliable second choice.
+local ROW_PATTERNS = { "^Durability", "^Requires Level" }
+
+-- Rides one of the rows above instead of adding a whole new line, so the
+-- verdict sits in a consistent spot (mirrors how Blizzard already puts
+-- weapon Speed in the right column of its own row). Returns the
+-- right-column fontstring on success so the caller can anchor the arrow.
+local function SetCompareRowText(tooltip, text, r, g, b)
+    local name = tooltip:GetName()
+    for _, pattern in ipairs(ROW_PATTERNS) do
+        for i = 2, tooltip:NumLines() do
+            local left = _G[name .. "TextLeft" .. i]
+            local leftText = left and left:GetText()
+            if leftText and leftText:match(pattern) then
+                local right = _G[name .. "TextRight" .. i]
+                if not right then return nil end
+                right:SetText(text)
+                right:SetTextColor(r, g, b)
+                right:Show()
+                return right
+            end
+        end
+    end
+    return nil
+end
+
 local function AddCompareLine(tooltip, link, bag, slot, invSlot, src)
     if not db or not db.enabled then return end
     local result = CompareItem(link, bag, slot, invSlot, src)
     if not result then return end
 
+    HideLineArrow(tooltip)
+
     -- result.approx (scored from the base-item link, not the scaled copy)
     -- deliberately gets no visual marker — per user preference the verdict
     -- line looks the same either way. The flag still gates bag arrows and
     -- loot alerts, which estimates never earn.
+    --
+    -- No "Compare:" label anywhere (per user preference) — the up/down
+    -- arrow carries that meaning instead, matching the bag/quest arrows.
+    local text, r, g, b, arrowDir
     if result.status == "unusable" then
         local suffix = result.context and (" (" .. result.context .. ")") or ""
-        tooltip:AddLine("Compare: can't equip" .. suffix, 1, 0.4, 0.4)
+        text, r, g, b = "Can't equip" .. suffix, 1, 0.4, 0.4
     elseif result.status == "wrongarmor" then
-        tooltip:AddLine("Compare: filtered armor type", 0.6, 0.6, 0.6)
+        text, r, g, b = "Filtered armor type", 0.6, 0.6, 0.6
     elseif result.status == "empty" then
-        tooltip:AddLine("Compare: fills empty slot", 0, 1, 0)
+        text, r, g, b, arrowDir = "Fills empty slot", 0, 1, 0, "up"
     elseif result.status == "even" then
-        tooltip:AddLine("Compare: 0%", 1, 0.82, 0)
+        text, r, g, b = "0%", 1, 0.82, 0
+    elseif result.status == "upgrade" then
+        text, r, g, b, arrowDir = string.format("%+.0f%%", result.pct), 0, 1, 0, "up"
     else
-        local up = result.status == "upgrade"
-        local text = string.format("Compare: %+.0f%%", result.pct)
-        if up then
-            tooltip:AddLine(text, 0, 1, 0)
-        else
-            tooltip:AddLine(text, 1, 0.25, 0.25)
-        end
+        text, r, g, b, arrowDir = string.format("%+.0f%%", result.pct), 1, 0.25, 0.25, "down"
+    end
+
+    local fontString = SetCompareRowText(tooltip, text, r, g, b)
+    if not fontString then
+        tooltip:AddLine(text, r, g, b)
+        fontString = _G[tooltip:GetName() .. "TextLeft" .. tooltip:NumLines()]
+    end
+    if arrowDir then
+        ShowLineArrow(tooltip, fontString, r, g, b, arrowDir == "down")
     end
     tooltip:Show()
 end
@@ -1335,6 +1404,7 @@ local function HookTooltip(tip)
     end)
     tip:HookScript("OnHide", function(self)
         self.refactorCompareDone = nil
+        HideLineArrow(self)
     end)
 end
 

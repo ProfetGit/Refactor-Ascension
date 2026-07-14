@@ -1034,11 +1034,9 @@ local function BuildMinimapButton()
     icon:SetWidth(17)
     icon:SetHeight(17)
     icon:SetPoint("TOPLEFT", 7, -6)
-    -- The addon's own arrow, in brand green — the same mark the bag
-    -- arrows use. Falls back to a gear icon if the texture is missing.
-    if icon:SetTexture("Interface\\AddOns\\Refactor\\arrow") then
-        icon:SetVertexColor(ACCENT[1], ACCENT[2], ACCENT[3])
-    else
+    -- The addon's own gear icon, full color. Falls back to a stock gear
+    -- icon if the texture is missing.
+    if not icon:SetTexture("Interface\\AddOns\\Refactor\\refactor") then
         icon:SetTexture("Interface\\Icons\\INV_Misc_Gear_01")
         icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
     end
