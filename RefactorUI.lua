@@ -885,6 +885,79 @@ local function BuildTweaksPage()
         "qualityBorder")
     y = y - 44
 
+    y = Section(child, "Crowd control", 0, y - 8, INNER_W)
+    local function CDB()
+        return RefactorCCShared and RefactorCCShared.GetDB() or nil
+    end
+    local function CCCheck(x, y2, label, desc, key, isEnabled)
+        return p:Track(MakeCheck(child, x, y2, INNER_W - x, label, desc,
+            function()
+                local c = CDB()
+                return c and c[key] or false
+            end,
+            function(v)
+                local c = CDB()
+                if c then c[key] = v end
+                if RefactorCCShared then RefactorCCShared.Update() end
+                RefactorUI.Refresh()
+            end,
+            nil, isEnabled))
+    end
+    CCCheck(0, y, "Show crowd-control alert",
+        "Big center-screen icon and timer while you're stunned, feared, or otherwise CC'd.",
+        "enabled")
+    y = y - 40
+    CCCheck(20, y, "Include roots",
+        "Also alerts on rooted and frozen effects.",
+        "roots", function()
+            local c = CDB()
+            return c and c.enabled
+        end)
+    y = y - 40
+    CCCheck(20, y, "Include silences and disarms",
+        "Also alerts on silence and disarm effects.",
+        "silences", function()
+            local c = CDB()
+            return c and c.enabled
+        end)
+    y = y - 40
+
+    local ccMoveBtn
+    ccMoveBtn = MakeButton(child, 130, 22, "Move alert", function()
+        local cs = RefactorCCShared
+        if not cs then return end
+        if cs.IsAnchorShown() then cs.HideAnchor() else cs.ShowAnchor() end
+        ccMoveBtn:Refresh()
+    end)
+    ccMoveBtn:SetPoint("TOPLEFT", 0, y)
+    ccMoveBtn.Refresh = function(self)
+        local cs = RefactorCCShared
+        if cs and cs.IsAnchorShown() then
+            self.text:SetText("Done — saved")
+            self:SetBackdropBorderColor(ACCENT[1], ACCENT[2], ACCENT[3], 0.9)
+        else
+            self.text:SetText("Move alert")
+            self:SetBackdropBorderColor(C_BORDER[1], C_BORDER[2], C_BORDER[3], 1)
+        end
+    end
+    p:Track(ccMoveBtn)
+    AttachTooltip(ccMoveBtn, "Move alert",
+        "Shows a green drag handle where the CC alert appears. Drag it, then click again to save.")
+
+    local ccResetBtn = MakeButton(child, 130, 22, "Reset position", function()
+        if RefactorCCShared then RefactorCCShared.ResetPosition() end
+        Print("CC alert position reset.")
+    end)
+    ccResetBtn:SetPoint("TOPLEFT", 140, y)
+
+    local ccTestBtn = MakeButton(child, 110, 22, "Test alert", function()
+        if RefactorCCShared then RefactorCCShared.Test() end
+    end)
+    ccTestBtn:SetPoint("TOPLEFT", 280, y)
+    AttachTooltip(ccTestBtn, "Test alert",
+        "Shows a 4-second sample stun alert.")
+    y = y - 36
+
     y = Section(child, "Errors", 0, y - 8, INNER_W)
     QolCheck(0, y, "Hide error text",
         "Hides the red \"Ability is not ready yet\" messages at the top of the screen.",

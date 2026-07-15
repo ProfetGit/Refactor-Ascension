@@ -25,6 +25,9 @@ The core feature. Assign your own weight to every stat (Strength, Agility, Crit,
 ### 🎁 Loot Toasts
 Since Refactor auto-loots instantly (see below), the stock loot window never shows — so Refactor replaces it with animated toast popups: item icon, quality-colored name, stack count, and (if it's an upgrade) a pulsing glow with the % gain.
 
+### 💫 Crowd-Control Alert
+The 3.3.5 client has no loss-of-control display, so it's easy to miss *why* your character suddenly stopped responding. While you're stunned, feared, polymorphed, or otherwise CC'd, Refactor shows a large center-screen icon with a cooldown spiral, a label ("Stunned", "Feared", …) and a countdown. Recognizes the CC abilities of all 21 CoA classes plus NPC/boss CC. Movable, testable, and toggleable on the Tweaks page — roots and silences/disarms have their own sub-toggles.
+
 ### ⚙️ Quality-of-Life Tweaks
 All individually toggleable:
 - Fast auto-loot (no more loot window delay)
@@ -102,7 +105,7 @@ You can also open the config window from the **minimap button** — left-click t
 ## Compatibility
 
 - Client: WotLK 3.3.5 (Interface 30300), Ascension-specific build
-- Bag addon support: works with the default Blizzard container frames and hooks Bagnon's item slots directly if installed
+- Bag addon support: works with the default Blizzard container frames, and hooks item slots directly for Bagnon, DragonUI's bundled Combuctor bags, and AdiBags if installed
 
 ## Contributing
 

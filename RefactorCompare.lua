@@ -1689,22 +1689,27 @@ end
 -- slot redraw. DragonUI's bundled Combuctor bag module is the same
 -- design (a KPack Combuctor port, itself Bagnon-family) with the same
 -- ItemSlot surface (Update/GetBag/GetID/GetItem/IsCached), exposed as
--- DragonUI.CombuctorItemSlot. Buttons are remembered (weak-keyed) so
--- equipment changes can re-evaluate them without waiting for the bag
--- addon's own updates.
+-- DragonUI.CombuctorItemSlot. Buttons are remembered (weak-keyed, mapped
+-- to the updater matching their addon's button surface) so equipment
+-- changes can re-evaluate them without waiting for the bag addon's own
+-- updates.
 local hookedSlotButtons = setmetatable({}, { __mode = "k" })
+
+local function UpdateBagnonSlot(self)
+    -- Cached slots show another character's (or offline) data; the
+    -- live bag APIs would read the wrong item, so fall back to the
+    -- link-only scan for those.
+    local bag, slot
+    if not self:IsCached() then
+        bag, slot = self:GetBag(), self:GetID()
+    end
+    UpdateArrowForLink(self, self:GetItem(), bag, slot)
+end
 
 local function HookItemSlotClass(itemSlot)
     hooksecurefunc(itemSlot, "Update", function(self)
-        hookedSlotButtons[self] = true
-        -- Cached slots show another character's (or offline) data; the
-        -- live bag APIs would read the wrong item, so fall back to the
-        -- link-only scan for those.
-        local bag, slot
-        if not self:IsCached() then
-            bag, slot = self:GetBag(), self:GetID()
-        end
-        UpdateArrowForLink(self, self:GetItem(), bag, slot)
+        hookedSlotButtons[self] = UpdateBagnonSlot
+        UpdateBagnonSlot(self)
     end)
 end
 
@@ -1729,6 +1734,38 @@ local function TryHookDragonUI()
     dragonUIHooked = true
 end
 
+-- AdiBags replaces the stock bags too, but its buttons aren't
+-- Bagnon-family: no GetBag/GetItem/IsCached, just .bag/.slot fields and
+-- a per-button Update on the "ItemButton" class prototype (fetched via
+-- its OO layer's GetClass). The bank sub-class inherits Update through
+-- __index, so one post-hook covers backpack, bags and bank alike.
+-- AdiBags has no offline-character cache — visible buttons always show
+-- the live player bags, so the container APIs are always the right
+-- source (its own cached .itemLink can lag behind on equip-triggered
+-- refreshes).
+local function UpdateAdiBagsSlot(self)
+    local bag, slot = self.bag, self.slot
+    if bag == nil or slot == nil then return end
+    UpdateArrowForLink(self, GetContainerItemLink(bag, slot), bag, slot)
+end
+
+local adiBagsHooked = false
+local function TryHookAdiBags()
+    if adiBagsHooked then return end
+    local ace = LibStub and LibStub.GetLibrary
+        and LibStub:GetLibrary("AceAddon-3.0", true)
+    local adibags = ace and ace:GetAddon("AdiBags", true)
+    local class = adibags and adibags.GetClass
+        and adibags:GetClass("ItemButton")
+    local proto = class and class.prototype
+    if not proto or type(proto.Update) ~= "function" then return end
+    hooksecurefunc(proto, "Update", function(self)
+        hookedSlotButtons[self] = UpdateAdiBagsSlot
+        UpdateAdiBagsSlot(self)
+    end)
+    adiBagsHooked = true
+end
+
 local UpdateQuestRewards -- defined in the quest-reward section below
 
 -- Re-evaluate arrows on open bags when equipped gear changes (equipping
@@ -1740,13 +1777,9 @@ local function RefreshOpenBags()
             UpdateContainerArrows(frame)
         end
     end
-    for button in pairs(hookedSlotButtons) do
+    for button, updateSlot in pairs(hookedSlotButtons) do
         if button:IsVisible() then
-            local bag, slot
-            if not button:IsCached() then
-                bag, slot = button:GetBag(), button:GetID()
-            end
-            UpdateArrowForLink(button, button:GetItem(), bag, slot)
+            updateSlot(button)
         end
     end
     if UpdateQuestRewards then UpdateQuestRewards() end
@@ -2225,11 +2258,12 @@ eventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
 eventFrame:RegisterEvent("PLAYER_LEVEL_UP")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
-        -- Bagnon/DragonUI can load before or after this addon; try the
-        -- hooks on every load until they stick (no-op once hooked or if
-        -- absent).
+        -- Bagnon/DragonUI/AdiBags can load before or after this addon;
+        -- try the hooks on every load until they stick (no-op once
+        -- hooked or if absent).
         TryHookBagnon()
         TryHookDragonUI()
+        TryHookAdiBags()
         if arg1 ~= "Refactor" then return end
         local firstRun = type(RefactorCompareDB) ~= "table"
         if firstRun then RefactorCompareDB = {} end

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.0]
+- **New: center-screen crowd-control alert** (`RefactorCC.lua`, on by default) — while you're stunned, feared, polymorphed, or otherwise CC'd, a large icon with a cooldown spiral, mechanic label ("Stunned", "Feared", ...) and countdown appears mid-screen; the 3.3.5 client has no native loss-of-control display. When several CCs overlap, the most severe (then longest) one shows.
+- Detection is three layers deep, since this client's `UnitDebuff` exposes no mechanic: a spell-ID table scraped from db.ascension.gg across all 21 CoA classes (~125 CC abilities), a name fallback for charge-style trigger spells that apply their stun under a different ID, and a debuff-tooltip scan ("Stunned.", "Feared." at line start) that catches NPC/boss CC no list could.
+- New "Crowd control" section on the Tweaks page: master toggle, "Include roots" and "Include silences and disarms" sub-toggles (both on), plus Move / Reset position / Test alert buttons. Roots show orange, silences gray, hard CC red.
+- Bag upgrade arrows now also work with **AdiBags** (previously only stock bags, Bagnon, and DragonUI's Combuctor module).
+
 ## [1.4.4]
 - **Retuned the default stat weights for every class and spec** — ported from current community theorycraft, replacing the old rough estimates (notable shifts: primary stats and weapon DPS weigh much more, flat hit/expertise weigh less). Also fixed spec-name typos so auto-detection matches the real talent tabs (Sanguine, Wildwalker, Geomancy, Archery, Domination, and friends). Existing saved profiles are untouched; the new defaults apply to newly seeded profiles and the new reset button below.
 - New "Reset to defaults" button on the Stat Weights page: discards your edits and restores the active class-spec profile's default weights.
