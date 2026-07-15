@@ -360,7 +360,7 @@ local function BuildGeneralPage()
     for i, at in ipairs(armorTypes) do
         p:Track(MakeCheck(p, (i - 1) * 100, y, 95, at, nil,
             function() return DB().armorTypes[at] ~= false end,
-            function(v) DB().armorTypes[at] = v; RefreshBags() end,
+            function(v) CS().SetArmorType(at, v); RefreshBags() end,
             armorTip))
     end
     y = y - 30
@@ -443,10 +443,23 @@ local function BuildWeightsPage()
     end
 
     -- Weight grid ----------------------------------------------------------
+    local sectionTop = y
     y = Section(child, "Stat weights", 0, y, INNER_W)
     SmallText(child, "score = stat amount × weight, summed. Weight 0 ignores the stat.",
         0, y, INNER_W)
     y = y - 18
+
+    local resetBtn = MakeButton(child, 130, 20, "Reset to defaults", function()
+        if shared.ResetActiveProfileWeights() then
+            RefreshBags()
+            RefactorUI.Refresh()
+        end
+    end)
+    resetBtn:SetPoint("TOPLEFT", INNER_W - 130, sectionTop)
+    p:Track(resetBtn)
+    AttachTooltip(resetBtn, "Reset to defaults",
+        "Discards your edits and restores this spec's default weights. Only works on " ..
+        "a class-spec profile, not a custom saved profile.")
 
     local ROWS = 11
     for i, s in ipairs(shared.STATS) do
@@ -880,6 +893,10 @@ local function BuildTweaksPage()
     QolCheck(0, y, "Mute error speech",
         "Silences the \"I can't do that yet\" voice when a cast fails.",
         "muteErrorSpeech")
+    y = y - 40
+    QolCheck(0, y, "Mute cast-deny sounds",
+        "Silences the fizzle / error sound when a cast is denied. Needs the silent-sound client patch; untick to hear the sounds again.",
+        "muteDenySounds")
     y = y - 40
 
     child:SetHeight(-y + 8)

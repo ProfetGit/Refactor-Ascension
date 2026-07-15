@@ -33,6 +33,7 @@ All individually toggleable:
 - Auto-confirms Bind-on-Pickup loot prompts
 - Quest automation — auto-accept, auto turn-in, gossip/greeting quest picking (hold **Shift** to fall back to manual for any step)
 - Hides red UI error text and mutes the "I can't do that yet" error voice line
+- Mutes the cast-deny **fizzle sound** (the noise when you spam an ability on cooldown or try to cast without enough resource) — needs the bundled one-click client patch, see [Installation](#installation)
 - Auto-declines group invites, duels, guild invites, and trades from strangers (all off by default; hold **Shift** to handle one manually) — each decline prints a chat line so you know it happened
 - Auto-accepts player resurrections in battlegrounds (off by default)
 
@@ -46,6 +47,16 @@ A clean, single-panel UI for everything above — no `/reload` required, changes
 1. Download the latest release (or clone this repo).
 2. Copy the `Refactor` folder into your Ascension `Interface\AddOns\` directory.
 3. Launch the game and make sure **Refactor** is enabled on the AddOns screen.
+
+### Optional: mute the cast-deny fizzle sound
+
+The fizzle noise the game plays when a cast is denied (ability on cooldown, not enough rage/mana/energy) is played by the game engine from sound files — an addon alone can't mute it. Refactor ships a tiny client patch that replaces those five sound files with silent copies:
+
+1. Open `Interface\AddOns\Refactor\client-patch\` and double-click **`install-silent-fizzles.cmd`** (it copies a `Sound\` folder with five silent `.wav` files into your game root, next to `Ascension.exe`).
+2. Restart the game.
+3. Done — casts deny silently. The **"Mute cast-deny sounds"** checkbox on the Tweaks page now works as an instant in-game toggle: unticking it brings the sound back (Refactor replays a bundled copy of the original), ticking it silences again. No restart needed either way.
+
+To undo everything, run `uninstall-silent-fizzles.cmd` from the same folder and restart the game. Without this patch installed, the checkbox has no effect while ticked (the stock sound plays as always) — and unticking it would play the sound twice, so leave it ticked.
 
 ---
 
