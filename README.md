@@ -88,6 +88,9 @@ You can also open the config window from the **minimap button** — left-click t
 ### Loot toast
 ![Loot toast](docs/images/loot-toast.png)
 
+### Crowd-control alert
+![Crowd-control alert](docs/images/cc-alert.png)
+
 ### Config window — General page
 ![Config window general page](docs/images/config-general.png)
 
