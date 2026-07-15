@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.0]
+- **New: CC alert can announce to party/raid chat** (`RefactorCC.lua`, off by default) — posts a chat line ("Silenced! (Interdict, 3s)") the moment you're stunned, feared, silenced, or otherwise unable to cast, so healers and other key roles get an immediate heads-up to use cooldowns or play defensively. Fires once per CC application (not spammed every tick), auto-picks RAID/PARTY based on your group, and skips rooted/frozen/disarmed since those don't stop a cast bar. Solo with `/rfc debug` on, it echoes locally instead of silently doing nothing, so the toggle can be checked without grouping up.
+- **New: scale sliders for the loot toasts and the CC alert** — both the Loot page and the Tweaks page's Crowd control section now have a size slider, so either can be resized to taste independent of UI scale/resolution.
+- **New: fullscreen map as a movable window** (`fullMapWindow`, on by default) — the full map becomes the only map mode: a scaled-down window with no black backdrop, draggable by its title strip (mousewheel there resizes), and keyboard movement keeps working instead of being grabbed by the fullscreen shell.
+- **New: quick invite** (`quickInvite`, on by default) — Alt + Right-Click a player's unit frame or chat name to invite them to your party.
+- **New: seamless bag upgrade** (`seamlessBagUpgrade`, on by default) — right-clicking a bag while all bag slots are full moves the smallest equipped bag's contents elsewhere and equips the new one in its place, instead of just erroring.
+- Percent-based effects ("3% Increased Critical Damage" on meta gems, percent `Equip:` lines) now score as a custom `"<name> %"` stat instead of being silently dropped — weight it via `/rfc weight` or the UI's scanned-stats list, UNKNOWN weight until then.
+- A 2H-vs-dual-wield comparison now discounts the offhand's weapon-DPS share by the same dual-wield penalty used elsewhere, instead of crediting it at full value — under-reported real 2H upgrades before.
+- Every default class/spec profile now weights Armor slightly (tank specs already did; other specs get a small 0.01 tie-breaker weight instead of ignoring it entirely).
+- Fixed quest-reward verdicts never showing on the fullscreen map's quest pane — hooking `QuestInfo_ShowRewards` never actually fired there since every quest-template `elements` table stores a bare reference to it (frozen at FrameXML load, before this addon exists to hook it); switched to hooking `QuestInfo_Display` instead, which every call site invokes by global name and so can actually be intercepted. Also hooked `WorldMapTooltip` directly so map reward tooltips get a verdict at all.
+- Quest reward arrow moved to the icon's top-right corner (matches the bag-slot arrow); redundant rescans on every quest-pane redraw are now skipped via a reward-link fingerprint.
+- Fixed stacked self-loot lines ("You receive loot: Foo x3.") not matching the loot-alert parser.
+- Added profile rename (Stat Weights page) — renames a saved profile in place and remaps every character's remembered pick so alts don't lose it; refuses Default and class-spec profiles since those are found by exact name.
+- Config window: reworked to a native-Blizzard three-column layout (stock dialog art, working search box, sticky detail pane) with profile switching, save-as, rename, and delete merged onto the top of the Stat Weights page.
+
 ## [1.5.0]
 - **New: center-screen crowd-control alert** (`RefactorCC.lua`, on by default) — while you're stunned, feared, polymorphed, or otherwise CC'd, a large icon with a cooldown spiral, mechanic label ("Stunned", "Feared", ...) and countdown appears mid-screen; the 3.3.5 client has no native loss-of-control display. When several CCs overlap, the most severe (then longest) one shows.
 - Detection is three layers deep, since this client's `UnitDebuff` exposes no mechanic: a spell-ID table scraped from db.ascension.gg across all 21 CoA classes (~125 CC abilities), a name fallback for charge-style trigger spells that apply their stun under a different ID, and a debuff-tooltip scan ("Stunned.", "Feared." at line start) that catches NPC/boss CC no list could.

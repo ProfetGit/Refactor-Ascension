@@ -19,7 +19,9 @@
 -- gem/enchant lines, All Stats expansion, active-only socket bonuses,
 -- empty-socket credit, DPS reconstructed from damage range x speed) on
 -- top of our instance scanning — Pawn itself reads base links, which is
--- exactly what Ascension scaling breaks.
+-- exactly what Ascension scaling breaks. Percent effects ("3% Increased
+-- Critical Damage", percent "Equip:" lines) score as custom "<name> %"
+-- stats since no rating conversion exists for them.
 --
 -- Trust rules: a verdict is only shown when BOTH sides were read from
 -- live scaled instances just now. If either tooltip can't be read, show
@@ -224,116 +226,116 @@ local RefreshConfig
 -- default before level 10, when no spec has been chosen yet.
 local CLASS_SPEC_WEIGHTS = {
     BARBARIAN = {
-        { name = "Headhunting", weights = { AGI = 1.473, CRIT = 0.65, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Brutality",   weights = { STR = 2.188, AGI = 1.537, CRIT = 0.761, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Ancestry",    weights = { STR = 1, AGI = 1.387, CRIT = 0.5, HIT = 0.5, HASTE = 0.55, DPS = 14, AP = 1, ARP = 0.25, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Headhunting", weights = { AGI = 1.473, CRIT = 0.65, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Brutality",   weights = { STR = 2.188, AGI = 1.537, CRIT = 0.761, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Ancestry",    weights = { STR = 1, AGI = 1.387, CRIT = 0.5, HIT = 0.5, HASTE = 0.55, DPS = 14, AP = 1, ARP = 0.25, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     BLOODMAGE = {
-        { name = "Fleshweaver", weights = { INT = 1, SPI = 0.621, CRIT = 0.5, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Sanguine",    weights = { STA = 0.27, INT = 1, SPI = 0.27, CRIT = 0.9, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Accursed",    weights = { STR = 1.323, AGI = 1.866, INT = 0.119, CRIT = 0.653, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.75, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Fleshweaver", weights = { INT = 1, SPI = 0.621, CRIT = 0.5, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Sanguine",    weights = { STA = 0.27, INT = 1, SPI = 0.27, CRIT = 0.9, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Accursed",    weights = { STR = 1.323, AGI = 1.866, INT = 0.119, CRIT = 0.653, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.75, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Eternal",     weights = { STR = 1.177, AGI = 2.967, STA = 1.08, INT = 0.067, CRIT = 0.364, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, SP = 0.25, ARP = 0.15, EXP = 0.5, ARMOR = 0.2, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     CHRONOMANCER = {
-        { name = "Time",      weights = { INT = 1, SPI = 0.575, CRIT = 0.5, HASTE = 0.65, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Infinite",  weights = { INT = 1, SPI = 0.46, CRIT = 0.75, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Artificer", weights = { AGI = 1.2, SPI = 1.6, CRIT = 0.828, HIT = 0.5, HASTE = 0.6, DPS = 7, AP = 0.5, SP = 0.25, ARP = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Duality",   weights = { SP = 1, INT = 0.8, HIT = 0.9, CRIT = 0.7, HASTE = 0.6, STA = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Time",      weights = { INT = 1, SPI = 0.575, CRIT = 0.5, HASTE = 0.65, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Infinite",  weights = { INT = 1, SPI = 0.46, CRIT = 0.75, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Artificer", weights = { AGI = 1.2, SPI = 1.6, CRIT = 0.828, HIT = 0.5, HASTE = 0.6, DPS = 7, AP = 0.5, SP = 0.25, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Duality",   weights = { SP = 1, INT = 0.8, HIT = 0.9, CRIT = 0.7, HASTE = 0.6, STA = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     CULTIST = {
-        { name = "Godblade",    weights = { STR = 2.268, INT = 1.271, CRIT = 0.797, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.25, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Corruption",  weights = { INT = 1, CRIT = 0.9, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Heretic",     weights = { STR = 1, INT = 0.104, CRIT = 3, HASTE = 0.4, DPS = 14, AP = 1, SP = 0.4, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Godblade",    weights = { STR = 2.268, INT = 1.271, CRIT = 0.797, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.25, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Corruption",  weights = { INT = 1, CRIT = 0.9, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Heretic",     weights = { STR = 1, INT = 0.104, CRIT = 3, HASTE = 0.4, DPS = 14, AP = 1, SP = 0.4, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Dreadnought", weights = { STR = 2.531, STA = 1.12, CRIT = 0.35, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, SP = 0.5, ARP = 0.15, EXP = 0.5, ARMOR = 0.255, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, BLOCK = 1.8, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     FELSWORN = {
-        { name = "Infernal", weights = { INT = 1, SPI = 0.398, CRIT = 1.242, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Slayer",   weights = { STR = 1, AGI = 2.5, CRIT = 0.734, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Infernal", weights = { INT = 1, SPI = 0.398, CRIT = 1.242, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Slayer",   weights = { STR = 1, AGI = 2.5, CRIT = 0.734, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Tyrant",   weights = { STR = 1.135, AGI = 2.817, STA = 2, CRIT = 0.35, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, ARP = 0.15, EXP = 0.5, ARMOR = 0.5, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     GUARDIAN = {
-        { name = "Gladiator",   weights = { STR = 2.464, AGI = 0.592, CRIT = 0.764, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Gladiator",   weights = { STR = 2.464, AGI = 0.592, CRIT = 0.764, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Vanguard",    weights = { STR = 2.354, AGI = 1.308, STA = 1.365, CRIT = 0.35, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, ARP = 0.15, EXP = 0.5, ARMOR = 0.3, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, BLOCK = 0.75, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Inspiration", weights = { STR = 2.16, AGI = 0.444, CRIT = 0.6, HIT = 0.5, HASTE = 0.55, DPS = 14, AP = 1, ARP = 0.25, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Inspiration", weights = { STR = 2.16, AGI = 0.444, CRIT = 0.6, HIT = 0.5, HASTE = 0.55, DPS = 14, AP = 1, ARP = 0.25, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     KNIGHT_OF_XOROTH = {
-        { name = "Hellfire", weights = { STR = 2.2, INT = 1.163, CRIT = 0.831, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 0.75, SP = 1, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Hellfire", weights = { STR = 2.2, INT = 1.163, CRIT = 0.831, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 0.75, SP = 1, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Defiance", weights = { STR = 2.549, AGI = 1.127, STA = 1.06, INT = 0, CRIT = 0.376, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, SP = 0.75, ARP = 0.15, EXP = 0.5, ARMOR = 0.2, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, BLOCK = 0.75, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "War",      weights = { STR = 2.398, AGI = 0.721, CRIT = 1.024, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "War",      weights = { STR = 2.398, AGI = 0.721, CRIT = 1.024, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     NECROMANCER = {
-        { name = "Death",     weights = { INT = 1, CRIT = 0.63, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Animation", weights = { INT = 1, CRIT = 0.6, HIT = 0.5, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Rime",      weights = { INT = 1, CRIT = 0.93, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Death",     weights = { INT = 1, CRIT = 0.63, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Animation", weights = { INT = 1, CRIT = 0.6, HIT = 0.5, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Rime",      weights = { INT = 1, CRIT = 0.93, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     PRIMALIST = {
-        { name = "Grovekeeper",   weights = { STR = 2.2, AGI = 0.374, CRIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.25, ARP = 0.2, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Wildwalker",    weights = { STR = 2.2, AGI = 0.486, CRIT = 0.65, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Grovekeeper",   weights = { STR = 2.2, AGI = 0.374, CRIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.25, ARP = 0.2, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Wildwalker",    weights = { STR = 2.2, AGI = 0.486, CRIT = 0.65, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Mountain_King", weights = { STR = 2.548, AGI = 1.503, STA = 1.2, CRIT = 0.35, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, SP = 1, ARP = 0.15, EXP = 0.5, ARMOR = 0.3, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Geomancy",      weights = { INT = 1, CRIT = 0.654, HIT = 0.5, HASTE = 0.6, SP = 1, ARP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Geomancy",      weights = { INT = 1, CRIT = 0.654, HIT = 0.5, HASTE = 0.6, SP = 1, ARP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     PYROMANCER = {
-        { name = "Incineration", weights = { INT = 1, CRIT = 1.242, HIT = 0.5, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Draconic",     weights = { INT = 1, CRIT = 1.614, HIT = 0.5, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Flameweaving", weights = { INT = 1, SPI = 2.182, CRIT = 0.9, HASTE = 0.65, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Incineration", weights = { INT = 1, CRIT = 1.242, HIT = 0.5, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Draconic",     weights = { INT = 1, CRIT = 1.614, HIT = 0.5, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Flameweaving", weights = { INT = 1, SPI = 2.182, CRIT = 0.9, HASTE = 0.65, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     RANGER = {
-        { name = "Archery",    weights = { AGI = 1.445, INT = 0.054, CRIT = 0.631, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.15, ARP = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Brigand",    weights = { STR = 1, AGI = 1.567, CRIT = 0.705, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Farstrider", weights = { AGI = 1.39, CRIT = 0.53, HIT = 0.5, HASTE = 0.55, DPS = 14, AP = 1, ARP = 0.2, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Archery",    weights = { AGI = 1.445, INT = 0.054, CRIT = 0.631, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.15, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Brigand",    weights = { STR = 1, AGI = 1.567, CRIT = 0.705, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Farstrider", weights = { AGI = 1.39, CRIT = 0.53, HIT = 0.5, HASTE = 0.55, DPS = 14, AP = 1, ARP = 0.2, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     REAPER = {
-        { name = "Harvest",    weights = { STR = 2.347, AGI = 0.471, CRIT = 0.67, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Soul",       weights = { STR = 2.2, AGI = 0.485, CRIT = 0.689, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Harvest",    weights = { STR = 2.347, AGI = 0.471, CRIT = 0.67, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Soul",       weights = { STR = 2.2, AGI = 0.485, CRIT = 0.689, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Domination", weights = { STR = 2.596, AGI = 1.53, STA = 1.2, CRIT = 0.35, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, ARP = 1.35, EXP = 0.5, ARMOR = 0.37, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     RUNEMASTER = {
-        { name = "Glyphic",      weights = { INT = 1, SPI = 0.33, CRIT = 0.69, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Riftblade",    weights = { STR = 1, AGI = 1.643, INT = 0.144, CRIT = 0.772, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.25, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Engravement",  weights = { STR = 1.125, AGI = 1.429, INT = 0.109, CRIT = 0.641, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.5, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Glyphic",      weights = { INT = 1, SPI = 0.33, CRIT = 0.69, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Riftblade",    weights = { STR = 1, AGI = 1.643, INT = 0.144, CRIT = 0.772, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.25, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Engravement",  weights = { STR = 1.125, AGI = 1.429, INT = 0.109, CRIT = 0.641, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.5, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     STARCALLER = {
-        { name = "Moon_Priest", weights = { INT = 1, SPI = 0.5, CRIT = 0.505, HASTE = 0.65, MP5 = 0.3, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Sentinel",    weights = { AGI = 1.366, INT = 2.1, CRIT = 0.778, HASTE = 0.1, SP = 0.25, ARP = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Warden",      weights = { STR = 0.55, AGI = 0.829, INT = 2, CRIT = 0.7, HASTE = 0.6, DPS = 14, AP = 0.5, SP = 1, ARP = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Moon_Priest", weights = { INT = 1, SPI = 0.5, CRIT = 0.505, HASTE = 0.65, MP5 = 0.3, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Sentinel",    weights = { AGI = 1.366, INT = 2.1, CRIT = 0.778, HASTE = 0.1, SP = 0.25, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Warden",      weights = { STR = 0.55, AGI = 0.829, INT = 2, CRIT = 0.7, HASTE = 0.6, DPS = 14, AP = 0.5, SP = 1, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Moonguard",   weights = { STR = 2.041, AGI = 2.147, STA = 1.1, INT = 0.721, CRIT = 0.354, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 0.75, SP = 1, ARP = 0.15, EXP = 0.5, ARMOR = 0.2, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, BLOCK = 0.75, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     STORMBRINGER = {
-        { name = "Lightning", weights = { INT = 1, CRIT = 1.563, HIT = 0.5, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Wind",      weights = { INT = 1, CRIT = 0.5, HIT = 0.5, HASTE = 0.55, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Maelstrom", weights = { INT = 1, CRIT = 0.882, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Lightning", weights = { INT = 1, CRIT = 1.563, HIT = 0.5, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Wind",      weights = { INT = 1, CRIT = 0.5, HIT = 0.5, HASTE = 0.55, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Maelstrom", weights = { INT = 1, CRIT = 0.882, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     SUN_CLERIC = {
-        { name = "Blessings", weights = { INT = 1, CRIT = 0.5, HASTE = 0.65, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Blessings", weights = { INT = 1, CRIT = 0.5, HASTE = 0.65, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Seraphim", weights = { STR = 2.771, AGI = 1.32, STA = 1.15, CRIT = 0.363, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 0.5, SP = 1, ARP = 0.15, EXP = 0.5, ARMOR = 0.256, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, BLOCK = 0.75, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Valkyrie", weights = { STR = 2.4, AGI = 0.445, CRIT = 0.625, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.25, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Piety",    weights = { INT = 1, CRIT = 1.5, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Valkyrie", weights = { STR = 2.4, AGI = 0.445, CRIT = 0.625, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.25, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Piety",    weights = { INT = 1, CRIT = 1.5, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     TEMPLAR = {
         { name = "Oathkeeper", weights = { STR = 1.333, AGI = 2.872, STA = 1.05, INT = 0.2, CRIT = 0.35, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, ARP = 0.15, EXP = 0.5, ARMOR = 0.4, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Zealot",     weights = { STR = 1.365, AGI = 1.844, INT = 0.091, CRIT = 0.678, HASTE = 0.6, DPS = 14, AP = 1, SP = 1, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Crusader",   weights = { STR = 1.05, AGI = 1.713, INT = 0.215, CRIT = 0.739, HASTE = 0.6, DPS = 14, AP = 1, SP = 1, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Zealot",     weights = { STR = 1.365, AGI = 1.844, INT = 0.091, CRIT = 0.678, HASTE = 0.6, DPS = 14, AP = 1, SP = 1, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Crusader",   weights = { STR = 1.05, AGI = 1.713, INT = 0.215, CRIT = 0.739, HASTE = 0.6, DPS = 14, AP = 1, SP = 1, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     TINKER = {
-        { name = "Demolition", weights = { AGI = 1.878, INT = 1.205, CRIT = 0.644, HASTE = 0.6, DPS = 14, AP = 1, SP = 1, ARP = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Invention",  weights = { INT = 1, CRIT = 0.5, HASTE = 0.65, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Mechanics",  weights = { AGI = 1.375, INT = 1.219, CRIT = 0.705, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.15, ARP = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Demolition", weights = { AGI = 1.878, INT = 1.205, CRIT = 0.644, HASTE = 0.6, DPS = 14, AP = 1, SP = 1, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Invention",  weights = { INT = 1, CRIT = 0.5, HASTE = 0.65, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Mechanics",  weights = { AGI = 1.375, INT = 1.219, CRIT = 0.705, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.15, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     VENOMANCER = {
         { name = "Fortitude", weights = { STR = 0.8, AGI = 2.529, STA = 1, CRIT = 0.357, HASTE = 0.35, DPS = 14, AP = 0.5, SP = 1, ARP = 0.15, ARMOR = 0.34, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Stalking",  weights = { STR = 0.5, AGI = 0.935, INT = 0.389, CRIT = 0.813, HASTE = 0.6, DPS = 14, AP = 0.5, SP = 1, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Rotweaver", weights = { INT = 1, CRIT = 1.2, HIT = 0.5, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Vizier",    weights = { INT = 1, CRIT = 0.5, HASTE = 0.65, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Stalking",  weights = { STR = 0.5, AGI = 0.935, INT = 0.389, CRIT = 0.813, HASTE = 0.6, DPS = 14, AP = 0.5, SP = 1, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Rotweaver", weights = { INT = 1, CRIT = 1.2, HIT = 0.5, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Vizier",    weights = { INT = 1, CRIT = 0.5, HASTE = 0.65, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     WITCH_DOCTOR = {
-        { name = "Shadowhunting", weights = { AGI = 2.037, INT = 1.194, CRIT = 0.672, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.75, ARP = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Voodoo",        weights = { INT = 1, SPI = 0.625, CRIT = 1.238, HASTE = 0.6, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Brewing",       weights = { INT = 1, SPI = 0.3, CRIT = 0.5, HASTE = 0.65, SP = 1, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Shadowhunting", weights = { AGI = 2.037, INT = 1.194, CRIT = 0.672, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.75, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Voodoo",        weights = { INT = 1, SPI = 0.625, CRIT = 1.238, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Brewing",       weights = { INT = 1, SPI = 0.3, CRIT = 0.5, HASTE = 0.65, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     WITCH_HUNTER = {
-        { name = "Boltslinger",  weights = { AGI = 1.342, INT = 1.104, CRIT = 0.813, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.5, ARP = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Houndmaster",  weights = { AGI = 1.375, INT = 0.336, CRIT = 0.891, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.5, ARP = 0.3, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Inquisition",  weights = { STR = 1, AGI = 1.745, INT = 1.082, CRIT = 0.644, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.75, ARP = 0.3, EXP = 0.5, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Boltslinger",  weights = { AGI = 1.342, INT = 1.104, CRIT = 0.813, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.5, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Houndmaster",  weights = { AGI = 1.375, INT = 0.336, CRIT = 0.891, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.5, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Inquisition",  weights = { STR = 1, AGI = 1.745, INT = 1.082, CRIT = 0.644, HASTE = 0.6, DPS = 14, AP = 1, SP = 0.75, ARP = 0.3, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Black_Knight", weights = { STR = 1.225, AGI = 3.326, STA = 1, INT = 0.27, CRIT = 0.35, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, SP = 0.75, ARP = 0.15, EXP = 0.5, ARMOR = 0.4, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, SOCKET = 20, UNKNOWN = 0.1 } },
     },
 }
@@ -661,6 +663,15 @@ local WEAPON_INVTYPES = {
     INVTYPE_RANGED = true, INVTYPE_RANGEDRIGHT = true, INVTYPE_THROWN = true,
 }
 
+-- Offhand weapons swing at half damage (WotLK's dual-wield penalty,
+-- before talents), so when a 2H candidate is judged against MH+OH the
+-- offhand's weapon-DPS share of the score only counts at this factor —
+-- full credit made the dual-wield pair look ~stronger than it hits and
+-- under-reported real 2H upgrades. Stats keep full value; only DPS is
+-- discounted, and only in that one comparison (OH-vs-OH is symmetric,
+-- the discount would cancel out).
+local OFFHAND_DPS_FACTOR = 0.5
+
 -- Slots the armor-type (cloth/leather/mail/plate) preference applies to.
 -- Cloaks are always cloth and rings/trinkets are Miscellaneous, so only
 -- the real body-armor slots are filtered.
@@ -929,13 +940,16 @@ local function ScanItem(link, bag, slot, invSlot, src)
         -- "+N Name" / "-N Name": base stats, gems, enchants, custom
         -- Ascension stats alike (negative stats exist, e.g. Kreeg's Mug).
         -- Skipped when the line is compound — a separator followed by
-        -- another signed number ("+10 Agility and +15 Stamina") — or the
-        -- greedy name capture would swallow the whole tail as one bogus
-        -- custom stat; the caller's splitter handles those instead.
+        -- another signed number ("+10 Agility and +15 Stamina") or a bare
+        -- number ("+21 Agility & 3% Increased Critical Damage": meta gems'
+        -- percent halves carry no sign) — or the greedy name capture would
+        -- swallow the whole tail as one bogus custom stat; the caller's
+        -- splitter handles those instead.
         local compound = false
         for _, sep in ipairs(STAT_SEPARATORS) do
             if line:find(sep .. "+", 1, true)
-                or line:find(sep .. "-", 1, true) then
+                or line:find(sep .. "-", 1, true)
+                or line:find(sep .. "%d") then
                 compound = true
                 break
             end
@@ -947,6 +961,18 @@ local function ScanItem(link, bag, slot, invSlot, src)
                 AddStat(statName, amount, sign == "-" and -1 or 1)
                 return true
             end
+        end
+
+        -- "N% Name" percent effects — meta gems ("3% Increased Critical
+        -- Damage"), percent socket bonuses, custom Ascension lines. No
+        -- rating conversion exists for these, so each scores as a custom
+        -- "<name> %" stat: weight it via /rfc weight (or the UI's scanned-
+        -- stats list), UNKNOWN weight until then. Dropping them entirely
+        -- (the old behavior) undervalued every item carrying one.
+        local pctAmount, pctName = line:match("^%+?([%d%.]+)%% (.+)$")
+        if pctAmount then
+            AddStat(pctName .. " %", pctAmount)
+            return true
         end
 
         local armor = line:match("^([%d,]+) Armor$")
@@ -986,6 +1012,22 @@ local function ScanItem(link, bag, slot, invSlot, src)
         end
         if amt then
             AddStat(res .. " per 5 sec", amt)
+            return true
+        end
+
+        -- Percent-based "Equip:" effects ("Equip: Improves your chance to
+        -- get a critical strike by 1%.") — the rating patterns below only
+        -- accept plain integers, so these parsed as prose and scored zero.
+        -- Same treatment as the bare "N% Name" lines above: a custom
+        -- "<name> %" stat at its own /rfc weight or UNKNOWN.
+        local pctEquipName, pctEquipAmount = line:match(
+            "^Equip: Increases (.-) by ([%d%.]+)%%%.?$")
+        if not pctEquipName then
+            pctEquipName, pctEquipAmount = line:match(
+                "^Equip: Improves (.-) by ([%d%.]+)%%%.?$")
+        end
+        if pctEquipName then
+            AddStat((pctEquipName:gsub("^your ", "")) .. " %", pctEquipAmount)
             return true
         end
 
@@ -1192,8 +1234,12 @@ local function ScoreItem(link, bag, slot, invSlot, src)
     end
 
     -- Weapons: DPS is the dominant term, weighted separately from stats.
+    -- Kept as its own component too, so the 2H-vs-dual-wield comparison
+    -- can discount the offhand's share (see OFFHAND_DPS_FACTOR).
+    local dpsScore
     if WEAPON_INVTYPES[equipLoc] and scan.dps then
-        score = score + scan.dps * (weights.DPS or 0)
+        dpsScore = scan.dps * (weights.DPS or 0)
+        score = score + dpsScore
     end
 
     if db and db.debug then
@@ -1202,6 +1248,7 @@ local function ScoreItem(link, bag, slot, invSlot, src)
 
     return {
         score = score,
+        dpsScore = dpsScore, -- weapon-DPS share of score (nil for non-weapons)
         quality = quality,
         reqLevel = reqLevel,
         itemType = itemType,
@@ -1219,13 +1266,15 @@ end
 -- Score of what's equipped in a slot: a number, nil when the slot is
 -- truly empty, or false when there IS an item but it can't be read
 -- (tooltip scan failed). Callers must treat false as "unknown" and stay
--- silent — never as an empty slot begging to be filled.
+-- silent — never as an empty slot begging to be filled. Second return is
+-- the weapon-DPS share of the score (nil unless the slot holds a weapon),
+-- for the offhand discount in the 2H comparison.
 local function ScoreEquipped(slot)
     local link = GetInventoryItemLink("player", slot)
     if not link then return nil end
     local info = ScoreItem(link, nil, nil, slot)
     if not info then return false end
-    return info.score
+    return info.score, info.dpsScore
 end
 
 local function MainHandIs2H()
@@ -1272,14 +1321,19 @@ local function CompareItem(link, bag, slot, invSlot, src)
 
     if info.equipLoc == "INVTYPE_2HWEAPON" then
         -- A two-hander replaces everything you're holding: compare against
-        -- main hand + off hand combined.
+        -- main hand + off hand combined, the offhand's weapon DPS at the
+        -- dual-wield penalty factor (shields/holdables have no DPS share
+        -- and keep full value).
         local mh = ScoreEquipped(16)
-        local oh = ScoreEquipped(17)
+        local oh, ohDps = ScoreEquipped(17)
         if mh == false or oh == false then return nil end
         if not mh and not oh then
             return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
         end
         equippedScore = (mh or 0) + (oh or 0)
+        if oh and ohDps then
+            equippedScore = equippedScore - ohDps * (1 - OFFHAND_DPS_FACTOR)
+        end
         if oh then context = "vs main + off hand" end
     elseif MainHandIs2H()
         and (info.equipLoc == "INVTYPE_WEAPON"
@@ -1607,6 +1661,12 @@ end
 
 HookTooltip(GameTooltip)
 HookTooltip(ItemRefTooltip)
+-- The fullscreen map's quest pane shows rewards through QuestInfo's
+-- QUEST_TEMPLATE_MAP2, whose item buttons write to WorldMapTooltip — a
+-- separate GameTooltipTemplate instance — so without this hook a reward
+-- hovered on the map got no verdict while the same reward in the quest
+-- log (QUEST_TEMPLATE_LOG, GameTooltip) did.
+if WorldMapTooltip then HookTooltip(WorldMapTooltip) end
 
 --------------------------------------------------------------------------
 -- Bag slot upgrade arrow
@@ -1801,15 +1861,15 @@ local function QuestItemIcon(button)
     return (name and _G[name .. "IconTexture"]) or button
 end
 
--- Markers sit on the icon's top-left corner: the top-right holds the
--- stack count and the button's right half is the item name text.
+-- Arrow sits on the icon's top-right corner (matches the bag-slot arrow);
+-- the coin marker below stays top-left, clear of it.
 local function GetQuestArrow(button)
     local arrow = button.refactorQuestArrow
     if not arrow then
         arrow = button:CreateTexture(nil, "OVERLAY")
         arrow:SetWidth(14)
         arrow:SetHeight(14)
-        arrow:SetPoint("TOPLEFT", QuestItemIcon(button), "TOPLEFT", -2, 2)
+        arrow:SetPoint("TOPRIGHT", QuestItemIcon(button), "TOPRIGHT", 2, 2)
         if arrow:SetTexture(ARROW_TEXTURE) then
             arrow:SetVertexColor(0, 1, 0)
         else
@@ -1840,23 +1900,53 @@ local function HideQuestMarkers(button)
     if button.refactorQuestCoin then button.refactorQuestCoin:Hide() end
 end
 
+-- QuestInfo_Display fires on every quest-pane redraw, not just when
+-- rewards actually change (accept/decline/gossip clicks re-run it too).
+-- Cheaply fingerprint the shown reward/choice links first; if unchanged
+-- since the last COMPLETE pass, skip the scan loop entirely. Reset to
+-- force a rebuild whenever markers get hidden outright (disabled, or no
+-- quest frame) so re-enabling always redraws instead of trusting a stale
+-- fingerprint from before the hide.
+local lastQuestSig, lastQuestComplete = "", false
+
+local function QuestRewardSig(qlog)
+    local parts = {}
+    for i = 1, MAX_QUEST_ITEMS do
+        local button = _G["QuestInfoItem" .. i]
+        if button and button:IsShown()
+            and (button.type == "choice" or button.type == "reward") then
+            local idx = button:GetID()
+            local link = qlog and GetQuestLogItemLink(button.type, idx)
+                or GetQuestItemLink(button.type, idx)
+            parts[#parts + 1] = button.type .. idx .. ":" .. tostring(link)
+        end
+    end
+    return table.concat(parts, "|")
+end
+
 -- Recomputes every visible reward button. Returns false when some item
 -- wasn't ready yet (not in the client cache / tooltip scan failed) so the
 -- caller schedules a retry — reward data often trails the frame opening.
 local function UpdateQuestRewardsNow()
-    -- QuestInfoFrame.rewardsFrame is a retail-era field; on 3.3.5 the
-    -- rewards container is the global QuestInfoRewardsFrame.
-    local rewardsFrame = QuestInfoRewardsFrame
-        or (QuestInfoFrame and QuestInfoFrame.rewardsFrame)
-    if not (rewardsFrame and rewardsFrame:IsVisible() and db and db.enabled) then
+    if not (db and db.enabled and QuestInfoFrame) then
         for i = 1, MAX_QUEST_ITEMS do
             local button = _G["QuestInfoItem" .. i]
             if button then HideQuestMarkers(button) end
         end
+        lastQuestSig, lastQuestComplete = "", false
         return true
     end
 
     local qlog = QuestInfoFrame.questLog and true or false
+
+    -- A retry (scan/CompareItem still pending) must always re-run even
+    -- though the links themselves haven't changed, so the skip only
+    -- applies once a prior pass has fully resolved.
+    local sig = QuestRewardSig(qlog)
+    if lastQuestComplete and sig == lastQuestSig then
+        return true
+    end
+
     local complete = true
     local choiceCount = 0
     local bestValue, bestButton = 0, nil
@@ -1944,6 +2034,7 @@ local function UpdateQuestRewardsNow()
             .. ", bestValue=" .. bestValue
             .. (complete and ")" or ", retrying)"))
     end
+    lastQuestSig, lastQuestComplete = sig, complete
     return complete
 end
 
@@ -1960,6 +2051,17 @@ questRetryFrame:SetScript("OnUpdate", function(self, elapsed)
     end
 end)
 
+-- QuestInfo_ShowRewards runs INSIDE QuestInfo_Display's element loop, and
+-- the display code reparents the shared rewards frame to the calling pane
+-- only AFTER the element function returns — so at hook time a check on the
+-- rewards CONTAINER's IsVisible() still walks up through the PREVIOUS
+-- pane's parent chain, usually a hidden one (this is why the world map's
+-- reward pane never got markers: the container looked invisible from here
+-- every time). UpdateQuestRewardsNow sidesteps that by never asking the
+-- container anything — it reads each QuestInfoItemN button's own IsShown()
+-- flag instead, which stock code sets directly (Show/Hide per button in
+-- QuestInfo_ShowRewards) and which isn't affected by the pane's SetParent
+-- happening later in the same call.
 function UpdateQuestRewards()
     if UpdateQuestRewardsNow() then
         questRetryFrame:Hide()
@@ -1970,25 +2072,43 @@ function UpdateQuestRewards()
     end
 end
 
--- QuestInfo_ShowRewards redraws the reward buttons for both the
--- quest-giver frame and the quest log. Guarded in case this custom
--- client renames it.
-if type(QuestInfo_ShowRewards) == "function" then
-    hooksecurefunc("QuestInfo_ShowRewards", UpdateQuestRewards)
+-- Hooking QuestInfo_ShowRewards directly doesn't work: every
+-- QUEST_TEMPLATE_*.elements table stores a bare reference to that
+-- function, frozen when QuestInfo.lua's templates were built (core
+-- FrameXML, long before this addon loads). hooksecurefunc only rebinds
+-- the global NAME to a wrapper — it can't reach into those already-built
+-- tables and swap the value they hold, so QuestInfo_Display's element
+-- loop keeps calling the untouched original and our hook never fires
+-- (confirmed live: no debug print, no marker, on quest log/map alike).
+-- QuestInfo_Display itself is safe to hook because every real call site
+-- invokes it by bare global name, which Lua re-resolves through the
+-- global table each time — that's what hooksecurefunc can actually
+-- intercept. It runs for every quest pane (detail dialog, quest log,
+-- map), reward elements or not, so re-scanning after each call is cheap
+-- and always reflects the current button state.
+if type(QuestInfo_Display) == "function" then
+    hooksecurefunc("QuestInfo_Display", UpdateQuestRewards)
 end
 
 --------------------------------------------------------------------------
 -- Loot-moment alert
 --------------------------------------------------------------------------
 
--- Turn a format string like "You receive loot: %s." into a match pattern.
+-- Turn a format string like "You receive loot: %sx%d." into a match
+-- pattern. Multi-stack formats go first so the "x3" suffix lands in the
+-- %d slot instead of being swallowed by the greedy %s capture — though
+-- either way the link is re-extracted from the capture by item-link
+-- shape, so a stack suffix riding along was never actually harmful.
 local function PatternFromFormat(fmt)
     fmt = fmt:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1")
     fmt = fmt:gsub("%%s", "(.+)")
+    fmt = fmt:gsub("%%d", "%%d+")
     return "^" .. fmt .. "$"
 end
 
 local LOOT_SELF_PATTERNS = {
+    PatternFromFormat(LOOT_ITEM_SELF_MULTIPLE or "You receive loot: %sx%d."),
+    PatternFromFormat(LOOT_ITEM_PUSHED_SELF_MULTIPLE or "You receive item: %sx%d."),
     PatternFromFormat(LOOT_ITEM_SELF or "You receive loot: %s."),
     PatternFromFormat(LOOT_ITEM_PUSHED_SELF or "You receive item: %s."),
 }
@@ -2122,8 +2242,8 @@ local function DeleteProfile(name)
     end
 end
 
--- Confirmation for the delete button on the UI's Profiles page —
--- destructive, so it stays a popup.
+-- Confirmation for the UI's profile delete button — destructive, so it
+-- stays a popup.
 StaticPopupDialogs["REFACTORCOMPARE_DELETE_PROFILE"] = {
     text = "Delete profile '%s'?",
     button1 = YES,
@@ -2134,6 +2254,48 @@ StaticPopupDialogs["REFACTORCOMPARE_DELETE_PROFILE"] = {
 
 RefactorCompareShared.SaveProfileAs = SaveProfileAs
 RefactorCompareShared.DeleteProfile = DeleteProfile
+
+-- Renames a hand-made profile in place and points every character's
+-- remembered pick (last-active, auto-applied, deliberate choice) at the
+-- new name, so alts don't lose it. Two names refuse: Default anchors the
+-- fallback path, and class-spec profiles are found BY NAME by
+-- auto-selection and the spec picker — renaming one would only make it
+-- regenerate from defaults under the old name.
+RefactorCompareShared.RenameProfile = function(old, new)
+    new = new and new:match("^%s*(.-)%s*$") or ""
+    if new == "" or new == old or not db.profiles[old] then return end
+    if old == "Default" then
+        Print("Can't rename the Default profile.")
+        return
+    end
+    local classPart, specPart = old:match("^(.-) %- (.+)$")
+    local specList = classPart and CLASS_SPEC_WEIGHTS[NormalizeClassKey(classPart)]
+    if specList then
+        local wanted = specPart:lower():gsub(" ", "_")
+        for _, specEntry in ipairs(specList) do
+            if specEntry.name:lower() == wanted then
+                Print("'" .. old .. "' is a class-spec profile — auto-selection finds "
+                    .. "it by this exact name. Use 'Save as' to make a copy you can "
+                    .. "name freely.")
+                return
+            end
+        end
+    end
+    if db.profiles[new] then
+        Print("A profile named '" .. new .. "' already exists.")
+        return
+    end
+    db.profiles[new] = db.profiles[old]
+    db.profiles[old] = nil
+    if db.activeProfile == old then db.activeProfile = new end
+    for _, map in ipairs({ db.charProfiles, db.charAutoProfile, db.charManualProfile }) do
+        for k, v in pairs(map) do
+            if v == old then map[k] = new end
+        end
+    end
+    Print("Renamed profile '" .. old .. "' to '" .. new .. "'.")
+    RefreshConfig()
+end
 
 -- Opens/closes the RefactorUI window (RefactorUI.lua, loaded after this
 -- file). The guard only matters if that file failed to load.

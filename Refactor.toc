@@ -2,7 +2,7 @@
 ## Title: Refactor
 ## Notes: Weighted-stat gear comparison with loot toasts, a center-screen crowd-control alert, plus quality-of-life tweaks: quest automation, fast loot, tooltip tweaks, and opt-in transmog auto-collection.
 ## Author: ProfetGit
-## Version: 1.5.0
+## Version: 1.6.0
 ## SavedVariables: RefactorCompareDB
 
 Refactor.lua

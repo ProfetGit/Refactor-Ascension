@@ -28,8 +28,11 @@ local ACCENT = { 0.20, 1.00, 0.60 }
 local ICON_SIZE = 44
 local RING_SIZE = 78          -- 64/36 of the icon, like ActionButton art
 local DEFAULT_Y = 180         -- offset above screen center
+local MIN_SCALE, MAX_SCALE, DEFAULT_SCALE = 0.6, 2.0, 1.0
 
 local cdb -- RefactorCompareDB.cc after ADDON_LOADED
+
+local function Scale() return (cdb and cdb.scale) or DEFAULT_SCALE end
 
 --------------------------------------------------------------------------
 -- Mechanics: label, priority (higher wins when several CCs overlap),
@@ -37,6 +40,10 @@ local cdb -- RefactorCompareDB.cc after ADDON_LOADED
 -- shown while the feature is on; roots and silences have sub-toggles.
 --------------------------------------------------------------------------
 
+-- `noAnnounce` marks mechanics that don't stop a cast bar (only movement or
+-- melee), so they're excluded from the party/raid chat announce even when
+-- shown on the center-screen alert: rooted/frozen casters can still cast,
+-- and a disarmed player can still heal.
 local MECHANICS = {
     STUN      = { label = "Stunned",       prio = 100, color = { 1.00, 0.35, 0.30 } },
     HORROR    = { label = "Horrified",     prio = 95,  color = { 1.00, 0.35, 0.30 } },
@@ -47,10 +54,10 @@ local MECHANICS = {
     INCAP     = { label = "Incapacitated", prio = 76,  color = { 1.00, 0.35, 0.30 } },
     DISORIENT = { label = "Disoriented",   prio = 74,  color = { 1.00, 0.35, 0.30 } },
     BANISH    = { label = "Banished",      prio = 72,  color = { 1.00, 0.35, 0.30 } },
-    FREEZE    = { label = "Frozen",        prio = 45,  color = { 1.00, 0.65, 0.25 }, flag = "roots" },
-    ROOT      = { label = "Rooted",        prio = 40,  color = { 1.00, 0.65, 0.25 }, flag = "roots" },
+    FREEZE    = { label = "Frozen",        prio = 45,  color = { 1.00, 0.65, 0.25 }, flag = "roots", noAnnounce = true },
+    ROOT      = { label = "Rooted",        prio = 40,  color = { 1.00, 0.65, 0.25 }, flag = "roots", noAnnounce = true },
     SILENCE   = { label = "Silenced",      prio = 30,  color = { 0.80, 0.80, 0.88 }, flag = "silences" },
-    DISARM    = { label = "Disarmed",      prio = 25,  color = { 0.80, 0.80, 0.88 }, flag = "silences" },
+    DISARM    = { label = "Disarmed",      prio = 25,  color = { 0.80, 0.80, 0.88 }, flag = "silences", noAnnounce = true },
 }
 
 -- Generated from db.ascension.gg (?spells=7.<class>&filter=me=<mechanic>)
@@ -367,7 +374,7 @@ local function BuildFrame()
         self.throttle = (self.throttle or 0) + elapsed
         if self.throttle < 0.05 then return end
         self.throttle = 0
-        if self.expiration then
+        if self.expiration and (not cdb or cdb.showDuration ~= false) then
             local remain = self.expiration - GetTime()
             if remain <= 0 then
                 self:Hide()
@@ -388,11 +395,16 @@ local function BuildFrame()
 end
 
 local function PositionFrame(f)
+    local s = Scale()
+    f:SetScale(s)
     f:ClearAllPoints()
+    -- SetPoint offsets are in the frame's own (scaled) coordinates, so the
+    -- saved UIParent-space offset is divided back out — same trick the
+    -- movable map window uses for its scale.
     if cdb and cdb.x and cdb.y then
-        f:SetPoint("CENTER", UIParent, "CENTER", cdb.x, cdb.y)
+        f:SetPoint("CENTER", UIParent, "CENTER", cdb.x / s, cdb.y / s)
     else
-        f:SetPoint("CENTER", UIParent, "CENTER", 0, DEFAULT_Y)
+        f:SetPoint("CENTER", UIParent, "CENTER", 0, DEFAULT_Y / s)
     end
 end
 
@@ -432,9 +444,40 @@ local function MechanicAllowed(m)
     return not flag or cdb[flag]
 end
 
+-- Party/raid announce: fires once per CC application (not every UNIT_AURA
+-- tick while it's active), skipped solo, and skipped for mechanics that
+-- don't stop a cast bar (see MECHANICS' noAnnounce).
+local announcedKey
+
+local function ChatChannel()
+    if GetNumRaidMembers() > 0 then return "RAID" end
+    if GetNumPartyMembers() > 0 then return "PARTY" end
+    return nil
+end
+
+local function Announce(mech, spellId, spellName, remain)
+    local label = MECHANICS[mech].label
+    local msg
+    if remain and remain < math.huge then
+        msg = string.format("%s! (%s, %ds)", label, spellName, math.ceil(remain))
+    else
+        msg = string.format("%s! (%s)", label, spellName)
+    end
+    local channel = ChatChannel()
+    if channel then
+        SendChatMessage(msg, channel)
+    elseif RefactorCompareDB and RefactorCompareDB.debug then
+        -- Solo + /rfc debug: echo locally so the toggle can be tested
+        -- without grouping up first.
+        DEFAULT_CHAT_FRAME:AddMessage(
+            "|cff33ff99Refactor|r: [solo, not sent] " .. msg)
+    end
+end
+
 local function Update()
     if not cdb or not cdb.enabled then
         HideCC()
+        announcedKey = nil
         return
     end
     if testUntil then
@@ -443,7 +486,7 @@ local function Update()
     end
 
     local bestMech, bestPrio, bestRemain = nil, -1, -1
-    local bestIcon, bestName, bestDur, bestExp
+    local bestIcon, bestName, bestDur, bestExp, bestSpellId
     for i = 1, 40 do
         local name, _, icon, _, _, duration, expiration, _, _, _, spellId =
             UnitDebuff("player", i)
@@ -458,15 +501,24 @@ local function Update()
                 and (expiration - GetTime()) or math.huge
             if prio > bestPrio or (prio == bestPrio and remain > bestRemain) then
                 bestMech, bestPrio, bestRemain = mech, prio, remain
-                bestIcon, bestName, bestDur, bestExp = icon, name, duration, expiration
+                bestIcon, bestName, bestDur, bestExp, bestSpellId =
+                    icon, name, duration, expiration, spellId
             end
         end
     end
 
     if bestMech then
         ShowCC(bestMech, bestIcon, bestName, bestDur, bestExp)
+        if cdb.announce and not MECHANICS[bestMech].noAnnounce and not testUntil then
+            local key = (bestSpellId or bestName) .. ":" .. tostring(bestExp)
+            if key ~= announcedKey then
+                announcedKey = key
+                Announce(bestMech, bestSpellId, bestName, bestRemain)
+            end
+        end
     else
         HideCC()
+        announcedKey = nil
     end
 end
 
@@ -531,6 +583,16 @@ RefactorCCShared = {
     end,
     Test = Test,
     Update = Update, -- toggles re-check immediately, not on the next debuff
+    GetScale = Scale,
+    SetScale = function(v)
+        if not cdb then return end
+        if v < MIN_SCALE then v = MIN_SCALE end
+        if v > MAX_SCALE then v = MAX_SCALE end
+        cdb.scale = v
+        if frame and frame:IsShown() then PositionFrame(frame) end
+    end,
+    MIN_SCALE = MIN_SCALE,
+    MAX_SCALE = MAX_SCALE,
 }
 
 --------------------------------------------------------------------------
@@ -552,6 +614,9 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         if cdb.enabled == nil then cdb.enabled = true end
         if cdb.roots == nil then cdb.roots = true end
         if cdb.silences == nil then cdb.silences = true end
+        if cdb.showDuration == nil then cdb.showDuration = true end
+        if cdb.announce == nil then cdb.announce = false end
+        if cdb.scale == nil then cdb.scale = DEFAULT_SCALE end
     elseif event == "UNIT_AURA" then
         if arg1 == "player" then Update() end
     elseif event == "PLAYER_ENTERING_WORLD" then

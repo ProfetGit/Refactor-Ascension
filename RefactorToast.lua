@@ -31,7 +31,11 @@ local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local SOLID = "Interface\\ChatFrame\\ChatFrameBackground" -- tintable solid
 local ACCENT = { 0.20, 1.00, 0.60 } -- the addon's chat-message green
 
+local MIN_SCALE, MAX_SCALE, DEFAULT_SCALE = 0.6, 1.8, 1.0
+
 local tdb -- RefactorCompareDB.toast after ADDON_LOADED
+
+local function Scale() return (tdb and tdb.scale) or DEFAULT_SCALE end
 
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor|r: " .. msg)
@@ -57,16 +61,22 @@ local function BaseAnchor()
 end
 
 local function PositionToast(t)
+    local s = Scale()
+    t:SetScale(s)
     t:ClearAllPoints()
+    -- SetPoint offsets are in the frame's own (scaled) coordinates, so the
+    -- desired on-screen pixel position is divided back out — same trick the
+    -- movable map window uses for its scale.
     t:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT",
-        t.baseX + (t.slide or 0), t.baseY)
+        (t.baseX + (t.slide or 0)) / s, t.baseY / s)
 end
 
 local function Reposition()
     local x, y = BaseAnchor()
+    local s = Scale()
     for i, t in ipairs(active) do
         t.baseX = x
-        t.baseY = y + (i - 1) * (TOAST_HEIGHT + TOAST_GAP)
+        t.baseY = y + (i - 1) * (TOAST_HEIGHT + TOAST_GAP) * s
         PositionToast(t)
     end
 end
@@ -496,6 +506,16 @@ RefactorToastShared = {
         if anchorFrame and anchorFrame:IsShown() then ShowAnchor() end
     end,
     Test = SpawnTestToasts,
+    GetScale = Scale,
+    SetScale = function(v)
+        if not tdb then return end
+        if v < MIN_SCALE then v = MIN_SCALE end
+        if v > MAX_SCALE then v = MAX_SCALE end
+        tdb.scale = v
+        Reposition() -- reflows every active toast at the new scale immediately
+    end,
+    MIN_SCALE = MIN_SCALE,
+    MAX_SCALE = MAX_SCALE,
 }
 
 --------------------------------------------------------------------------
@@ -516,6 +536,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         end
         tdb = RefactorCompareDB.toast
         if tdb.enabled == nil then tdb.enabled = true end
+        if tdb.scale == nil then tdb.scale = DEFAULT_SCALE end
     elseif event == "CHAT_MSG_LOOT" then
         OnLootMessage(arg1)
     end

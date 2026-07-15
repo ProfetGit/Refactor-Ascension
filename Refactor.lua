@@ -34,6 +34,7 @@ local QOL_DEFAULTS = {
     questAccept = true,    -- auto-accept quest offers and escort confirmations
     questTurnIn = true,    -- auto-complete quests (multi-choice rewards stay open)
     questGossip = true,    -- auto-pick quest entries from NPC gossip menus
+    fullMapWindow = true,  -- fullscreen map as a movable window (no blackout)
     hideErrorText = true,  -- hide red UI error text ("Ability is not ready yet")
     muteErrorSpeech = true,-- silence "I can't do that yet" voice errors
     -- Companion to the silent-sound client patch (loose files under the
@@ -51,6 +52,10 @@ local QOL_DEFAULTS = {
     declineGuilds = false, -- decline guild invites
     declineTrades = false, -- close trades from non-friend/guild/group players
     autoResBG = false,     -- accept player resurrections inside battlegrounds
+    quickInvite = true,    -- Alt + Right-Click: quick invite player
+    -- Moves items and equips a bag on your behalf when your bag slots are
+    -- full; on by default per user request.
+    seamlessBagUpgrade = true, -- right-click a bag: auto-swap in the smallest equipped bag
 }
 
 local function InitQol()
@@ -90,6 +95,10 @@ local function ApplyErrorSpeech()
     SetCVar("Sound_EnableErrorSpeech", Qol("muteErrorSpeech") and 0 or 1)
 end
 
+-- Assigned by the world-map section at the bottom of this file; declared
+-- here so Set can re-apply the flag while the map is open.
+local ApplyFullMapWindow
+
 -- Shared with RefactorUI.lua (the config window).
 RefactorQoL = {
     Get = Qol,
@@ -97,6 +106,7 @@ RefactorQoL = {
         InitQol()
         if qdb then qdb[key] = value and true or false end
         if key == "muteErrorSpeech" then ApplyErrorSpeech() end
+        if key == "fullMapWindow" and ApplyFullMapWindow then ApplyFullMapWindow() end
     end,
 }
 
@@ -576,6 +586,28 @@ social:SetScript("OnEvent", function(self, event, arg1, arg2)
 end)
 
 --------------------------------------------------------------------------
+-- Social: Alt + Right-Click a player to quickly invite them
+--------------------------------------------------------------------------
+
+local orig_UnitPopup_ShowMenu = UnitPopup_ShowMenu
+function UnitPopup_ShowMenu(dropdownFrame, which, unit, name, userData)
+    if Qol("quickInvite") and IsAltKeyDown() and (unit or name) then
+        local targetName = name
+        if unit then
+            if not UnitIsPlayer(unit) then
+                return orig_UnitPopup_ShowMenu(dropdownFrame, which, unit, name, userData)
+            end
+            targetName = UnitName(unit)
+        end
+        if targetName and targetName ~= UnitName("player") then
+            InviteUnit(targetName)
+            return
+        end
+    end
+    return orig_UnitPopup_ShowMenu(dropdownFrame, which, unit, name, userData)
+end
+
+--------------------------------------------------------------------------
 -- Errors: hide the red UI error text ("Ability is not ready yet" etc.)
 --------------------------------------------------------------------------
 
@@ -624,3 +656,494 @@ errText:SetScript("OnEvent", function(self, event, message)
     -- Same color/hold values the default UI uses for error lines.
     UIErrorsFrame:AddMessage(message, 1.0, 0.1, 0.1, 1.0)
 end)
+
+--------------------------------------------------------------------------
+-- World map: fullscreen map as a movable window
+--
+-- Everything on the fullscreen map (title, dropdowns, map, quest list and
+-- detail/reward panes) is anchored inside WorldMapPositioningGuide, a
+-- 1024x768 box centered in WorldMapFrame — the frame itself is just a
+-- screen-covering shell: SetParent(nil) + SetAllPoints + EnableKeyboard
+-- (that keyboard grab is why you can't move with WASD) + the BlackoutWorld
+-- backdrop. Stock code already ships the counter-recipe in the advanced
+-- windowed mode (WorldMapFrame_SetMiniMode): UIPanel area "center",
+-- allowOtherPanels, SetMovable, own anchor. This applies that same
+-- treatment to fullscreen mode: shrink the shell to the 1024x768 content
+-- box, scale it down, hide the blackout, release the keyboard, and drag
+-- via the title strip (mousewheel there resizes). While the flag is on
+-- this window is the ONLY map mode: the size-down button is hidden and
+-- anything that still lands in mini mode (the persisted miniWorldMap CVar
+-- at login) is sized straight back up.
+--------------------------------------------------------------------------
+
+do
+    if WorldMapFrame and BlackoutWorld and WorldMapPositioningGuide
+        and WORLDMAP_SETTINGS and WORLDMAP_WINDOWED_SIZE then
+
+        local FULLMAP_W, FULLMAP_H = 1024, 768 -- WorldMapPositioningGuide box
+        local MIN_SCALE, MAX_SCALE = 0.5, 1.0
+        local DEFAULT_SCALE = 0.85 -- most players land here; UI shows this as "1.0"
+
+        -- Position/scale live outside qol (RefactorQoL.Set coerces values
+        -- to booleans). Lazily created: saved variables don't exist yet
+        -- when this file loads.
+        local function FMDB()
+            if type(RefactorCompareDB) ~= "table" then return nil end
+            if type(RefactorCompareDB.fullmap) ~= "table" then
+                RefactorCompareDB.fullmap = {}
+            end
+            return RefactorCompareDB.fullmap
+        end
+
+        local function Windowized()
+            return Qol("fullMapWindow")
+                and WORLDMAP_SETTINGS.size ~= WORLDMAP_WINDOWED_SIZE
+        end
+
+        -- SetPoint offsets are in the frame's own (scaled) coordinates, so
+        -- the saved UIParent-space center offset is divided back out.
+        local function ApplyPosition()
+            local db = FMDB()
+            local s = db and db.scale or DEFAULT_SCALE
+            local x = db and db.x or 0
+            local y = db and db.y or 0
+            WorldMapFrame:ClearAllPoints()
+            WorldMapFrame:SetPoint("CENTER", UIParent, "CENTER", x / s, y / s)
+        end
+
+        local function SavePosition()
+            local db = FMDB()
+            if not db then return end
+            local s = WorldMapFrame:GetScale()
+            local fx, fy = WorldMapFrame:GetCenter()
+            local ux, uy = UIParent:GetCenter()
+            if fx and ux then
+                db.x = fx * s - ux
+                db.y = fy * s - uy
+            end
+        end
+
+        -- Quest blob mouseover hit-testing caches screen translations;
+        -- invalidate after any move or rescale (stock does the same on its
+        -- own drags and mode switches).
+        local function RefreshBlob()
+            if WorldMapBlobFrame then WorldMapBlobFrame.xRatio = nil end
+            if type(WorldMapBlobFrame_CalculateHitTranslations) == "function"
+                and WorldMapFrame:IsShown() then
+                WorldMapBlobFrame_CalculateHitTranslations()
+            end
+        end
+
+        -- The panel manager reads the UIPanelLayout-* attributes only once
+        -- "UIPanelLayout-defined" is set — and setting it is the manager's
+        -- own job: on the FIRST ShowUIPanel it copies the stock
+        -- UIPanelWindows["WorldMapFrame"] table (area "full") over the
+        -- attributes, clobbering any attribute written earlier. A "full"
+        -- panel hides UIParent, which is why the first map-open after a
+        -- load blanked the whole UI. Stock's advanced windowed mode has
+        -- the same problem and ships the fix (WorldMapFrame_SetMiniMode):
+        -- before "defined", mutate the table; after, write the attributes.
+        local function SetPanelSlot(area, allow)
+            if not WorldMapFrame:GetAttribute("UIPanelLayout-defined") then
+                local w = UIPanelWindows and UIPanelWindows["WorldMapFrame"]
+                if w then
+                    w.area = area
+                    w.allowOtherPanels = allow
+                end
+            else
+                WorldMapFrame:SetAttribute("UIPanelLayout-area", area)
+                WorldMapFrame:SetAttribute("UIPanelLayout-allowOtherPanels", allow)
+            end
+        end
+
+        -- Drag/resize handle: the title strip above the dropdown row. The
+        -- right edge stays clear of the close / size-down buttons.
+        local drag = CreateFrame("Frame", nil, WorldMapFrame)
+        drag:SetPoint("TOPLEFT", WorldMapPositioningGuide, "TOPLEFT", 0, 0)
+        drag:SetPoint("TOPRIGHT", WorldMapPositioningGuide, "TOPRIGHT", -120, 0)
+        drag:SetHeight(30)
+        drag:EnableMouse(true)
+        drag:EnableMouseWheel(true)
+        drag:Hide()
+
+        local function Apply()
+            if Windowized() then
+                local db = FMDB()
+                local s = db and db.scale or DEFAULT_SCALE
+                WorldMapFrame:SetParent(UIParent)
+                WorldMapFrame:SetWidth(FULLMAP_W)
+                WorldMapFrame:SetHeight(FULLMAP_H)
+                WorldMapFrame:SetScale(s)
+                ApplyPosition()
+                WorldMapFrame:SetMovable(true)
+                WorldMapFrame:EnableKeyboard(false) -- WASD stays live
+                -- Same panel-slot switch stock's advanced windowed mode
+                -- uses: managed as a centered panel that tolerates others,
+                -- instead of the UIParent-hiding "full" slot.
+                SetPanelSlot("center", true)
+                BlackoutWorld:Hide()
+                -- The window IS the only mode while the flag is on: the
+                -- size-down button is hidden so the mini map is
+                -- unreachable (ToggleSizeUp re-shows it every switch).
+                if WorldMapFrameSizeDownButton then
+                    WorldMapFrameSizeDownButton:Hide()
+                end
+                drag:Show()
+                RefreshBlob()
+            elseif WORLDMAP_SETTINGS.size == WORLDMAP_WINDOWED_SIZE then
+                drag:Hide()
+                if Qol("fullMapWindow") then
+                    -- Something still landed in mini mode (the persisted
+                    -- miniWorldMap CVar at login, or the flag was turned
+                    -- on while the mini map was active): clear the CVar
+                    -- and size back up — that call re-enters Apply through
+                    -- its hook and windowizes.
+                    SetCVar("miniWorldMap", 0)
+                    if type(WorldMap_ToggleSizeUp) == "function" then
+                        WorldMap_ToggleSizeUp()
+                    end
+                end
+            else
+                -- Flag turned off while fullscreen: faithfully redo the
+                -- shell bits of WorldMap_ToggleSizeUp.
+                drag:Hide()
+                WorldMapFrame:SetParent(nil)
+                WorldMapFrame:ClearAllPoints()
+                WorldMapFrame:SetAllPoints()
+                WorldMapFrame:SetScale(1)
+                if type(SetupFullscreenScale) == "function"
+                    and WorldMapFrame:IsShown() then
+                    SetupFullscreenScale(WorldMapFrame)
+                end
+                WorldMapFrame:SetMovable(false)
+                WorldMapFrame:EnableKeyboard(true)
+                SetPanelSlot("full", false)
+                BlackoutWorld:Show()
+                if WorldMapFrameSizeDownButton then
+                    WorldMapFrameSizeDownButton:Show()
+                end
+                RefreshBlob()
+            end
+        end
+        ApplyFullMapWindow = Apply
+
+        drag:SetScript("OnMouseDown", function(self, button)
+            if button ~= "LeftButton" or not Windowized() then return end
+            WorldMapFrame:StartMoving()
+        end)
+        drag:SetScript("OnMouseUp", function(self, button)
+            if button ~= "LeftButton" or not Windowized() then return end
+            WorldMapFrame:StopMovingOrSizing()
+            SavePosition()
+            ApplyPosition() -- normalize back to the saved CENTER anchor
+            RefreshBlob()
+        end)
+        -- Shared by the mousewheel handler and the settings-window field
+        -- (RefactorUI): clamp, keep the window centered where it is, and
+        -- re-scale in place. A no-op scale write while not windowized still
+        -- saves so the value takes effect next time the window opens.
+        local function SetScale(s)
+            local db = FMDB()
+            if not db then return end
+            if s < MIN_SCALE then s = MIN_SCALE end
+            if s > MAX_SCALE then s = MAX_SCALE end
+            if Windowized() then
+                SavePosition()
+                db.scale = s
+                WorldMapFrame:SetScale(s)
+                ApplyPosition()
+                RefreshBlob()
+            else
+                db.scale = s
+            end
+        end
+
+        drag:SetScript("OnMouseWheel", function(self, delta)
+            if not Windowized() then return end
+            local db = FMDB()
+            if not db then return end
+            SetScale((db.scale or DEFAULT_SCALE) + delta * 0.05)
+        end)
+
+        RefactorFullMapShared = {
+            GetScale = function()
+                local db = FMDB()
+                return (db and db.scale) or DEFAULT_SCALE
+            end,
+            SetScale = SetScale,
+            MIN_SCALE = MIN_SCALE,
+            MAX_SCALE = MAX_SCALE,
+            -- The real WoW frame scale at the "1.0" mark shown in the UI —
+            -- everything there is actual-scale / BASE_SCALE, so the default
+            -- reads as a clean 1.0 instead of the raw 0.85.
+            BASE_SCALE = DEFAULT_SCALE,
+        }
+
+        -- ToggleSizeUp rebuilds the fullscreen shell (and re-shows the
+        -- blackout) on every size switch; OnShow covers plain opens plus
+        -- the stock SetupFullscreenScale that runs just before this hook;
+        -- ToggleSizeDown needs the scale cleanup above.
+        hooksecurefunc("WorldMap_ToggleSizeUp", Apply)
+        hooksecurefunc("WorldMap_ToggleSizeDown", Apply)
+        WorldMapFrame:HookScript("OnShow", Apply)
+
+        -- The panel slot must be right BEFORE the first ShowUIPanel, not
+        -- fixed up during it (OnShow is too late — a "full" open has
+        -- already hidden UIParent by then). Apply now with default flags,
+        -- and again at PLAYER_ENTERING_WORLD once the saved flag is
+        -- readable; the map can't be opened before that fires.
+        Apply()
+        local loader = CreateFrame("Frame")
+        loader:RegisterEvent("PLAYER_ENTERING_WORLD")
+        loader:SetScript("OnEvent", function(self)
+            self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+            Apply()
+        end)
+    end
+end
+
+--------------------------------------------------------------------------
+-- Seamless bag upgrade. Right-clicking a bag while all 4 bag slots are
+-- full normally just errors ("no free bag slot"). When the flag is on we
+-- instead: find the equipped bag with the fewest slots, relocate its
+-- contents into free slots elsewhere, equip the new bag in its place, and
+-- park the now-empty old bag in the slot that was freed up.
+--
+-- Every step that touches an item slot (PickupContainerItem,
+-- PickupInventoryItem) is a server round trip: the slots involved go
+-- "locked" until the server confirms, and issuing the next pickup before
+-- that resolves desyncs the cursor. So this runs as a single-item-at-a-time
+-- queue driven by BAG_UPDATE/ITEM_LOCK_CHANGED, never more than one
+-- in-flight swap.
+--------------------------------------------------------------------------
+
+do
+    local bu = nil -- non-nil while a swap sequence is in flight
+    local buFrame = CreateFrame("Frame")
+    local BU_TIMEOUT = 8 -- seconds; a slot that never unlocks means the server rejected the move
+
+    local function SlotLocked(bag, slot)
+        return select(3, GetContainerItemInfo(bag, slot)) and true or false
+    end
+
+    local function SlotEmpty(bag, slot)
+        return GetContainerItemLink(bag, slot) == nil
+    end
+
+    local function ItemFamily(link)
+        return (link and GetItemFamily(link)) or 0
+    end
+
+    -- A destination slot in `bag` can take `itemFamily` if the bag is a
+    -- plain bag (family 0, including the backpack) or the families overlap
+    -- bitwise (soul bags, quivers, herb bags, etc).
+    local function FamilyFits(bagFamily, itemFamily)
+        return bagFamily == 0 or itemFamily == 0 or bit.band(bagFamily, itemFamily) ~= 0
+    end
+
+    local function StopBagUpgrade(errMsg)
+        if errMsg then UIErrorsFrame:AddMessage(errMsg, 1, 0.1, 0.1) end
+        bu = nil
+        buFrame:UnregisterEvent("BAG_UPDATE")
+        buFrame:UnregisterEvent("ITEM_LOCK_CHANGED")
+        buFrame:SetScript("OnUpdate", nil)
+    end
+
+    local function StepBagUpgrade()
+        if not bu then return end
+
+        if bu.phase == "moving" then
+            local mv = bu.moves[1]
+            if not mv then
+                bu.phase = "equip"
+                return StepBagUpgrade()
+            end
+            if SlotEmpty(mv.fromBag, mv.fromSlot) then
+                table.remove(bu.moves, 1) -- this move already landed
+                return StepBagUpgrade()
+            end
+            if SlotLocked(mv.fromBag, mv.fromSlot) or SlotLocked(mv.toBag, mv.toSlot) then
+                return -- still resolving the previous pickup, wait for the next event
+            end
+            PickupContainerItem(mv.fromBag, mv.fromSlot)
+            PickupContainerItem(mv.toBag, mv.toSlot)
+            return
+
+        elseif bu.phase == "equip" then
+            if GetInventoryItemLink("player", bu.targetInvSlot) ~= bu.oldBagLink then
+                -- old bag link changed: the equip swap already landed
+                bu.phase = "park"
+                return StepBagUpgrade()
+            end
+            if CursorHasItem() then return end
+            if SlotLocked(bu.newBag, bu.newSlot) then return end
+            PickupContainerItem(bu.newBag, bu.newSlot) -- new bag onto cursor
+            -- Bag-slot equips need the dedicated PutItemInBag, not the
+            -- generic PickupInventoryItem swap Blizzard uses for gear slots
+            -- (PickupInventoryItem left the old bag stuck on the cursor
+            -- instead of swapping it back — it isn't the right API for bag
+            -- slots specifically, only for stock equipment slots).
+            PutItemInBag(bu.targetInvSlot) -- equips it; old (now-empty) bag replaces cursor
+            return
+
+        elseif bu.phase == "park" then
+            if not CursorHasItem() then
+                StopBagUpgrade() -- nothing left on cursor: the old bag already auto-stacked/placed
+                return
+            end
+            if SlotLocked(0, bu.parkSlot) or not SlotEmpty(0, bu.parkSlot) then
+                return
+            end
+            PickupContainerItem(0, bu.parkSlot)
+            StopBagUpgrade()
+        end
+    end
+
+    buFrame:SetScript("OnEvent", StepBagUpgrade)
+
+    -- Fallback watchdog: if nothing resolves within BU_TIMEOUT, the server
+    -- rejected a move (e.g. bag went missing mid-sequence). Bail instead of
+    -- hanging silently; whatever already moved stays where it landed.
+    local buElapsed = 0
+    local function BuWatchdog(_, elapsed)
+        buElapsed = buElapsed + elapsed
+        if buElapsed > BU_TIMEOUT then
+            buElapsed = 0
+            StopBagUpgrade("Refactor: bag upgrade timed out, aborting.")
+        end
+    end
+
+    local function StartBagUpgrade(state)
+        bu = state
+        buElapsed = 0
+        buFrame:RegisterEvent("BAG_UPDATE")
+        buFrame:RegisterEvent("ITEM_LOCK_CHANGED")
+        buFrame:SetScript("OnUpdate", BuWatchdog)
+        StepBagUpgrade()
+    end
+
+    -- Called from a hooksecurefunc after the real UseContainerItem already
+    -- ran (see below) — the boolean return is only used internally, for the
+    -- early-return guards below to short-circuit each other.
+    local function TryBagUpgrade(bag, slot)
+        if not Qol("seamlessBagUpgrade") then return false end
+        if bu then return false end -- a sequence is already running
+        if InCombatLockdown() then return false end
+        if BankFrame and BankFrame:IsShown() then return false end -- right-click there means bank deposit/equip
+        if MerchantFrame and MerchantFrame:IsShown() then return false end -- right-click there means sell to vendor
+
+        local link = GetContainerItemLink(bag, slot)
+        if not link then return false end
+        local _, _, _, _, _, itemType, _, _, equipLoc = GetItemInfo(link)
+        if itemType ~= "Container" or equipLoc ~= "INVTYPE_BAG" then return false end
+
+        -- Only step in when Blizzard's own equip would fail (no free bag slot).
+        for bagID = 1, NUM_BAG_SLOTS do
+            if GetContainerNumSlots(bagID) == 0 then return false end
+        end
+
+        local newItemID = tonumber(link:match("item:(%d+)"))
+        for bagID = 1, NUM_BAG_SLOTS do
+            local invSlot = ContainerIDToInventoryID(bagID)
+            if GetInventoryItemID("player", invSlot) == newItemID then
+                UIErrorsFrame:AddMessage("You already have that bag equipped.", 1, 0.1, 0.1)
+                return true
+            end
+        end
+
+        -- Equipped bag with the fewest slots is the one being replaced.
+        local targetBag, targetSlots
+        for bagID = 1, NUM_BAG_SLOTS do
+            local n = GetContainerNumSlots(bagID)
+            if not targetSlots or n < targetSlots then
+                targetBag, targetSlots = bagID, n
+            end
+        end
+        if not targetBag then return false end
+
+        -- Plan moves for every item in targetBag, dry-run first so a
+        -- shortfall aborts before anything actually moves.
+        local freeSlots = {} -- {bag, slot, family} for every empty slot outside targetBag
+        for bagID = 0, NUM_BAG_SLOTS do
+            if bagID ~= targetBag then
+                local bagFamily = 0
+                if bagID > 0 then
+                    bagFamily = ItemFamily(GetInventoryItemLink("player", ContainerIDToInventoryID(bagID)))
+                end
+                for s = 1, GetContainerNumSlots(bagID) do
+                    if SlotEmpty(bagID, s) then
+                        table.insert(freeSlots, { bag = bagID, slot = s, family = bagFamily })
+                    end
+                end
+            end
+        end
+
+        -- A bag can only be unequipped once it is completely empty, so the
+        -- new bag itself must be moved out too if it's sitting inside the
+        -- one being replaced — track where it lands so the equip step below
+        -- picks it up from its new home instead of its original slot.
+        local newBag, newSlot = bag, slot
+        local moves, usedFree = {}, {}
+        local ok = true
+        for s = 1, targetSlots do
+            local itemLink = GetContainerItemLink(targetBag, s)
+            if itemLink then
+                local family = ItemFamily(itemLink)
+                local dest
+                for i, free in ipairs(freeSlots) do
+                    if not usedFree[i] and FamilyFits(free.family, family) then
+                        dest, usedFree[i] = free, true
+                        break
+                    end
+                end
+                if not dest then ok = false break end
+                table.insert(moves, { fromBag = targetBag, fromSlot = s, toBag = dest.bag, toSlot = dest.slot })
+                if targetBag == bag and s == slot then
+                    newBag, newSlot = dest.bag, dest.slot
+                end
+            end
+        end
+
+        -- Reserve one more free slot to park the old bag once it's emptied.
+        local parkSlot
+        if ok then
+            for i, free in ipairs(freeSlots) do
+                if not usedFree[i] and free.bag == 0 then
+                    parkSlot, usedFree[i] = free.slot, true
+                    break
+                end
+            end
+            if not parkSlot then ok = false end
+        end
+
+        if not ok then
+            UIErrorsFrame:AddMessage("Not enough free bag space to swap in that bag.", 1, 0.1, 0.1)
+            return true
+        end
+
+        StartBagUpgrade({
+            phase = "moving",
+            moves = moves,
+            targetBag = targetBag,
+            targetInvSlot = ContainerIDToInventoryID(targetBag),
+            oldBagLink = GetInventoryItemLink("player", ContainerIDToInventoryID(targetBag)),
+            newBag = newBag,
+            newSlot = newSlot,
+            parkSlot = parkSlot,
+        })
+        return true
+    end
+
+    -- Reacting via hooksecurefunc (not replacing the global) keeps every
+    -- other UseContainerItem call — eating food, opening lockboxes, using
+    -- trinkets from bags — untainted. Replacing the global directly used to
+    -- put an addon-defined function in the call path for ALL of those too,
+    -- and Blizzard flags that as taint even for calls TryBagUpgrade itself
+    -- ignores. The tradeoff: when Blizzard's own equip attempt can't work
+    -- (no free bag slot), its failure message shows for an instant before
+    -- this hook's shuffle-and-retry takes over, instead of being preempted.
+    hooksecurefunc("UseContainerItem", function(bag, slot)
+        TryBagUpgrade(bag, slot)
+    end)
+end
+
