@@ -376,11 +376,20 @@ local function NormalizeClassKey(name)
     return name and name:upper():gsub(" ", "_")
 end
 
+-- Returns the spec list, the DISPLAY class name (for profile names shown
+-- to the player), and the normalized weights-table key that matched (for
+-- lookups into tables sharing CLASS_SPEC_WEIGHTS' key shape, like
+-- ARMOR_TYPES_BY_CLASS — indexing those with the display name silently
+-- misses, which is how armor auto-apply was broken for every class).
 local function GetClassSpecList()
     local className, classToken = UnitClass("player")
-    local list = classToken and CLASS_SPEC_WEIGHTS[classToken]
-    if not list then list = CLASS_SPEC_WEIGHTS[NormalizeClassKey(className)] end
-    return list, className
+    local key = classToken
+    local list = key and CLASS_SPEC_WEIGHTS[key]
+    if not list then
+        key = NormalizeClassKey(className)
+        list = key and CLASS_SPEC_WEIGHTS[key]
+    end
+    return list, className, key
 end
 
 -- Candidate names for the player's primary spec, in confidence order.
@@ -560,7 +569,7 @@ end
 -- points exist.
 local function AutoApplyClassSpec()
     if not db then return end
-    local specList, className = GetClassSpecList()
+    local specList, className, classKey = GetClassSpecList()
     if not specList then
         if db.debug then
             Print("auto-profile: no weights for class '" .. tostring(UnitClass("player")) .. "'.")
@@ -594,7 +603,7 @@ local function AutoApplyClassSpec()
     -- preference, so it applies independently of whether the player picked
     -- a custom weight profile — unless they've edited the checkboxes
     -- themselves (charManualArmor, set by the UI setter below).
-    local armorList = ARMOR_TYPES_BY_CLASS[className]
+    local armorList = ARMOR_TYPES_BY_CLASS[classKey]
     if armorList and not db.charManualArmor[charKey] then
         local wanted = {}
         for _, t in ipairs(armorList) do wanted[t] = true end
