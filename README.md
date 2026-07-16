@@ -14,6 +14,7 @@ The core feature. Assign your own weight to every stat (Strength, Agility, Crit,
 - Instant **% upgrade / downgrade verdict** as a tooltip overlay
 - Green arrows on bag items that are upgrades
 - Smart slot logic — rings/trinkets/one-handers compare against your *weaker* equipped item, two-handers compare against your combined main+off hand
+- **Smart equip** — right-clicking a ring/trinket/one-hander into a full pair replaces whichever equipped item is actually weaker under your weights, instead of always the first slot
 - Correctly handles Ascension's **item scaling**: because Ascension scales item instances server-side (two copies of the same item link can have different stats), Refactor scans the *live* tooltip instead of trusting the item link — so verdicts are always accurate for the item actually in your bag, not some generic base version.
 - Never guesses: if an item can't be scanned (not cached client-side, hard requirement not met, etc.), no verdict is shown rather than a misleading one.
 
@@ -23,7 +24,7 @@ The core feature. Assign your own weight to every stat (Strength, Agility, Crit,
 - Auto-selection pauses if you manually switch profiles, and resumes with a simple command
 
 ### 🎁 Loot Toasts
-Since Refactor auto-loots instantly (see below), the stock loot window never shows — so Refactor replaces it with animated toast popups: item icon, quality-colored name, stack count, and (if it's an upgrade) a pulsing glow with the % gain.
+Since Refactor auto-loots instantly (see below), the stock loot window never shows — so Refactor replaces it with animated toast popups: item icon, quality-colored name, stack count, and (if it's an upgrade) a pulsing glow with the % gain. Optionally shows the stack's auction-house value too (Auto/TSM/Auctionator, configurable on the Loot page).
 
 ### 💫 Crowd-Control Alert
 The 3.3.5 client has no loss-of-control display, so it's easy to miss *why* your character suddenly stopped responding. While you're stunned, feared, polymorphed, or otherwise CC'd, Refactor shows a large center-screen icon with a cooldown spiral, a label ("Stunned", "Feared", …) and a countdown. Recognizes the CC abilities of all 21 CoA classes plus NPC/boss CC. Movable, testable, and toggleable on the Tweaks page — roots and silences/disarms have their own sub-toggles.
@@ -39,6 +40,9 @@ All individually toggleable:
 - Mutes the cast-deny **fizzle sound** (the noise when you spam an ability on cooldown or try to cast without enough resource) — needs the bundled one-click client patch, see [Installation](#installation)
 - Auto-declines group invites, duels, guild invites, and trades from strangers (all off by default; hold **Shift** to handle one manually) — each decline prints a chat line so you know it happened
 - Auto-accepts player resurrections in battlegrounds (off by default)
+- Quick invite: Alt + Right-Click a player's unit frame, chat name, or model in the world to invite them to your party (off by default)
+- Fullscreen map as a movable, resizable window instead of a fullscreen blackout
+- Seamless bag upgrade: right-click a full bag to auto-swap in your smallest equipped bag
 
 ### 🖥️ In-Game Config Window
 A clean, single-panel UI for everything above — no `/reload` required, changes apply instantly.
@@ -108,7 +112,7 @@ You can also open the config window from the **minimap button** — left-click t
 ## Compatibility
 
 - Client: WotLK 3.3.5 (Interface 30300), Ascension-specific build
-- Bag addon support: works with the default Blizzard container frames, and hooks item slots directly for Bagnon, DragonUI's bundled Combuctor bags, and AdiBags if installed
+- Bag addon support: works with the default Blizzard container frames, and hooks item slots directly for Bagnon, DragonUI's bundled Combuctor bags, AdiBags, and ElvUI if installed
 
 ## Contributing
 

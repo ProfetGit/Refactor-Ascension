@@ -120,6 +120,7 @@ local DEFAULTS = {
     enabled = true,
     lootAlert = true,
     bagIcons = true,
+    smartEquip = true, -- right-click equip replaces the weaker of a slot pair
     minQuality = 2, -- ignore items below Uncommon so junk doesn't clutter tooltips
     armorTypes = { Cloth = true, Leather = true, Mail = true, Plate = true },
     activeProfile = "Default",
@@ -1290,6 +1291,18 @@ local function CanDualWield()
     return IsSpellKnown and IsSpellKnown(674) or false
 end
 
+-- A shield (or held-in-off-hand frill) is a deliberate role choice, not a
+-- weapon competing for its slot: a one-hander scored against it nearly
+-- always "wins" under weapon weights, painting a misleading upgrade arrow
+-- on every 1H in the bag. While one is equipped, 1H weapons only compete
+-- for the main hand.
+local function OffhandIsShield()
+    local link = GetInventoryItemLink("player", 17)
+    if not link then return false end
+    local equipLoc = select(9, GetItemInfo(link))
+    return equipLoc == "INVTYPE_SHIELD" or equipLoc == "INVTYPE_HOLDABLE"
+end
+
 -- Core comparison. Returns nil (nothing to show — including any side we
 -- couldn't actually read) or a result table:
 --   status  = "upgrade" | "downgrade" | "even" | "empty" | "unusable" | "wrongarmor"
@@ -1348,11 +1361,13 @@ local function CompareItem(link, bag, slot, invSlot, src)
         context = "vs equipped 2H"
     else
         local slots = SLOTS_FOR_INVTYPE[info.equipLoc]
-        if info.equipLoc == "INVTYPE_WEAPON" and not CanDualWield() then
+        if info.equipLoc == "INVTYPE_WEAPON"
+            and (not CanDualWield() or OffhandIsShield()) then
             slots = { 16 }
         end
         -- Multi-slot gear (rings, trinkets, 1H weapons): compare against
         -- the weaker of the equipped items, since that's what you'd replace.
+        local weakerSlot
         for _, slot in ipairs(slots) do
             local s = ScoreEquipped(slot)
             if s == false then return nil end
@@ -1360,8 +1375,15 @@ local function CompareItem(link, bag, slot, invSlot, src)
                 return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
             end
             if not equippedScore or s < equippedScore then
-                equippedScore = s
+                equippedScore, weakerSlot = s, slot
             end
+        end
+        -- When two slots competed, name the loser so the verdict says
+        -- what it's actually beating (and what smart equip will replace).
+        if weakerSlot and #slots > 1 then
+            local elink = GetInventoryItemLink("player", weakerSlot)
+            local name = elink and elink:match("%[(.-)%]")
+            if name then context = "vs " .. name end
         end
     end
 
@@ -1389,6 +1411,119 @@ local function CompareItem(link, bag, slot, invSlot, src)
 
     return { status = status, pct = pct, context = context,
         levelLocked = info.levelLocked, approx = info.approx }
+end
+
+--------------------------------------------------------------------------
+-- Smart equip
+--
+-- Right-clicking a ring/trinket/1H weapon into a full pair should replace
+-- the WEAKER of the two equipped items under current weights, not the
+-- engine's fixed pick (always the first slot). The click can't be
+-- preempted: replacing the UseContainerItem global puts addon code in the
+-- path of every bag click and Blizzard flags that as taint (see the
+-- bag-upgrade hook in Refactor.lua for the war story), so this reacts
+-- after the engine's own equip instead. The engine swaps the displaced
+-- item into the clicked bag slot; once it lands there unlocked, it gets
+-- equipped over the weaker slot — both better items stay equipped, the
+-- weaker one ends up in the bag. Scores are snapshotted at click time
+-- (both items still equipped — the swap is a server round trip) under the
+-- usual trust rules: either side unreadable means hands off, and a failed
+-- or blocked equip (level requirement, rings in combat) never settles, so
+-- the watchdog just times the fix-up out.
+--------------------------------------------------------------------------
+
+local SMART_EQUIP_SLOTS = {
+    INVTYPE_FINGER = { 11, 12 },
+    INVTYPE_TRINKET = { 13, 14 },
+    INVTYPE_WEAPON = { 16, 17 },
+}
+
+do
+    local seFrame = CreateFrame("Frame")
+    local se -- pending fix-up, nil when idle
+    local seElapsed = 0
+
+    local function StopSmartEquip()
+        se = nil
+        seFrame:UnregisterAllEvents()
+        seFrame:SetScript("OnUpdate", nil)
+    end
+
+    seFrame:SetScript("OnEvent", function()
+        if not se then return end
+        -- Which slot did the engine put the new item in?
+        local landed
+        for i = 1, 2 do
+            if GetInventoryItemLink("player", se.slots[i]) ~= se.links[i] then
+                landed = i
+                break
+            end
+        end
+        if not landed then return end -- swap not visible yet
+        if se.slots[landed] == se.weakerSlot then
+            StopSmartEquip() -- engine already replaced the weaker one
+            return
+        end
+        -- The displaced (stronger) item should be sitting in the clicked
+        -- bag slot; wait until it's there and unlocked.
+        if GetContainerItemLink(se.bag, se.slot) ~= se.links[landed] then return end
+        local _, _, locked = GetContainerItemInfo(se.bag, se.slot)
+        if locked then return end
+        if CursorHasItem() then
+            StopSmartEquip()
+            return
+        end
+        local bag, slot, target = se.bag, se.slot, se.weakerSlot
+        StopSmartEquip()
+        PickupContainerItem(bag, slot)
+        EquipCursorItem(target)
+    end)
+
+    local function SeWatchdog(_, elapsed)
+        seElapsed = seElapsed + elapsed
+        if seElapsed > 2 then StopSmartEquip() end
+    end
+
+    hooksecurefunc("UseContainerItem", function(bag, slot)
+        if not db or not db.enabled or db.smartEquip == false then return end
+        if se then return end -- a fix-up is already in flight
+        -- Right-click means sell/deposit/attach/trade while these are open.
+        if (MerchantFrame and MerchantFrame:IsShown())
+            or (BankFrame and BankFrame:IsShown())
+            or (MailFrame and MailFrame:IsShown())
+            or (TradeFrame and TradeFrame:IsShown())
+            or (AuctionFrame and AuctionFrame:IsShown())
+            or (GuildBankFrame and GuildBankFrame:IsShown()) then
+            return
+        end
+        if CursorHasItem() then return end
+        local link = GetContainerItemLink(bag, slot)
+        if not link then return end
+        local equipLoc = select(9, GetItemInfo(link))
+        local slots = SMART_EQUIP_SLOTS[equipLoc]
+        if not slots then return end
+        if equipLoc == "INVTYPE_WEAPON"
+            and (not CanDualWield() or MainHandIs2H() or OffhandIsShield()) then
+            return -- only one candidate slot; the engine default is right
+        end
+        local linkA = GetInventoryItemLink("player", slots[1])
+        local linkB = GetInventoryItemLink("player", slots[2])
+        if not linkA or not linkB then return end -- empty slot: engine fills it
+        local sa = ScoreEquipped(slots[1])
+        local sb = ScoreEquipped(slots[2])
+        if type(sa) ~= "number" or type(sb) ~= "number" then return end
+        if sa == sb then return end -- either is fine, leave the engine to it
+        se = {
+            bag = bag, slot = slot, slots = slots,
+            links = { linkA, linkB },
+            weakerSlot = sa < sb and slots[1] or slots[2],
+        }
+        seElapsed = 0
+        seFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
+        seFrame:RegisterEvent("ITEM_LOCK_CHANGED")
+        seFrame:RegisterEvent("BAG_UPDATE")
+        seFrame:SetScript("OnUpdate", SeWatchdog)
+    end)
 end
 
 --------------------------------------------------------------------------
@@ -1824,6 +1959,40 @@ local function TryHookAdiBags()
         UpdateAdiBagsSlot(self)
     end)
     adiBagsHooked = true
+end
+
+-- ElvUI's bag module replaces the stock frames too, but isn't Bagnon- or
+-- AdiBags-family: one shared module method (Bags:UpdateSlot(frame, bagID,
+-- slotID)) redraws every slot button, rather than a per-button class.
+-- Post-hooking that method covers backpack + bags; the button itself is
+-- frame.Bags[bagID][slotID] and carries no bag/slot fields of its own, so
+-- they're stashed on the button for RefreshOpenBags to reuse later.
+local function UpdateElvUISlot(button, bagID, slotID)
+    button.refactorBag, button.refactorSlot = bagID, slotID
+    UpdateArrowForLink(button, GetContainerItemLink(bagID, slotID), bagID, slotID)
+end
+
+local function RefreshElvUISlot(button)
+    if button.refactorBag == nil then return end
+    UpdateArrowForLink(button, GetContainerItemLink(button.refactorBag, button.refactorSlot),
+        button.refactorBag, button.refactorSlot)
+end
+
+local elvUIHooked = false
+local function TryHookElvUI()
+    if elvUIHooked then return end
+    local ace = LibStub and LibStub.GetLibrary
+        and LibStub:GetLibrary("AceAddon-3.0", true)
+    local elvui = ace and ace.GetAddon and ace:GetAddon("ElvUI", true)
+    local bagsModule = elvui and elvui.GetModule and elvui:GetModule("Bags", true)
+    if not bagsModule or type(bagsModule.UpdateSlot) ~= "function" then return end
+    hooksecurefunc(bagsModule, "UpdateSlot", function(self, frame, bagID, slotID)
+        local button = frame and frame.Bags and frame.Bags[bagID] and frame.Bags[bagID][slotID]
+        if not button then return end
+        hookedSlotButtons[button] = RefreshElvUISlot
+        UpdateElvUISlot(button, bagID, slotID)
+    end)
+    elvUIHooked = true
 end
 
 local UpdateQuestRewards -- defined in the quest-reward section below
@@ -2420,12 +2589,13 @@ eventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
 eventFrame:RegisterEvent("PLAYER_LEVEL_UP")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
-        -- Bagnon/DragonUI/AdiBags can load before or after this addon;
-        -- try the hooks on every load until they stick (no-op once
+        -- Bagnon/DragonUI/AdiBags/ElvUI can load before or after this
+        -- addon; try the hooks on every load until they stick (no-op once
         -- hooked or if absent).
         TryHookBagnon()
         TryHookDragonUI()
         TryHookAdiBags()
+        TryHookElvUI()
         if arg1 ~= "Refactor" then return end
         local firstRun = type(RefactorCompareDB) ~= "table"
         if firstRun then RefactorCompareDB = {} end

@@ -5,7 +5,9 @@
 -- and fades out. If RefactorCompare judges the item an upgrade (same
 -- trust rules as the bag arrows: live instance scan only, never a
 -- bare-link estimate), the toast carries a softly pulsing green arrow
--- and the % verdict as its second line.
+-- and the % verdict as its second line. The stack's worth (TSM /
+-- Auctionator / vendor, source picked on the Loot page) sits right-
+-- aligned on that same line.
 --
 -- Hover a toast to pause its fade and see the item tooltip; click to
 -- dismiss it; shift-click to link the item in chat.
@@ -39,6 +41,102 @@ local function Scale() return (tdb and tdb.scale) or DEFAULT_SCALE end
 
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor|r: " .. msg)
+end
+
+--------------------------------------------------------------------------
+-- Item value (auction / vendor price on the toast)
+--------------------------------------------------------------------------
+-- Price sources are discovered at use time, never assumed: TSM's fork
+-- exposes TSMAPI:GetPriceSources()/GetItemValue(link, key) and modules
+-- register their own keys (DBMarket, DBMinBuyout, ...); Auctionator's
+-- scan DB is reached through the global Atr_GetAuctionBuyout, which keys
+-- by item NAME. Auction-house prices ONLY — vendor sell price is
+-- deliberately not offered: GetItemInfo reports the BASE item, and on
+-- Ascension the scaled instance vendors for a different amount (the
+-- tooltip's own Sell Price line), so showing it just contradicts the
+-- game. Same reason TSM's VendorSell source is filtered out of the
+-- dropdown. AH DBs only know items the player has scanned; unknown item
+-- = no text. AH prices key on the base item ID, so instance scaling
+-- doesn't matter here; and money is informational, not the green-arrow
+-- promise, so no trust rules apply beyond "no data → show nothing".
+
+local function TSMValue(link, key)
+    if TSMAPI and TSMAPI.GetItemValue then
+        local ok, v = pcall(TSMAPI.GetItemValue, TSMAPI, link, key)
+        if ok and type(v) == "number" and v > 0 then return v end
+    end
+end
+
+local function AuctionatorValue(name)
+    if name and Atr_GetAuctionBuyout then
+        local ok, v = pcall(Atr_GetAuctionBuyout, name)
+        if ok and type(v) == "number" and v > 0 then return v end
+    end
+end
+
+-- Per-item value in copper under the configured source, or nil.
+local function ItemValue(link, name)
+    local src = (tdb and tdb.priceSource) or "auto"
+    if src == "auto" then
+        return TSMValue(link, "DBMarket") or TSMValue(link, "DBMinBuyout")
+            or AuctionatorValue(name)
+    elseif src == "auctionator" then
+        return AuctionatorValue(name)
+    end
+    local key = src:match("^tsm:(.+)")
+    if key then return TSMValue(link, key) end
+end
+
+-- TSM registers a dozen sources (vendor prices, crafting cost,
+-- disenchant value, Accounting's personal buy/sell history, bridges to
+-- Auctioneer/Auctionator...) but the toast answers exactly one question
+-- — "what would this loot fetch at the AH" — so only the AuctionDB
+-- market sources pass the whitelist. AtrValue (TSM's Auctionator
+-- bridge) is the same number as the direct Auctionator entry above.
+local TSM_SOURCE_WHITELIST = { DBMarket = true, DBMinBuyout = true }
+
+-- Sources actually available right now, for the config dropdown.
+-- Keys: "auto", "auctionator", "tsm:<TSM source key>".
+local function GetPriceSources()
+    local list = {
+        { key = "auto", label = "Auto (first market price found)" },
+    }
+    if Atr_GetAuctionBuyout then
+        tinsert(list, { key = "auctionator", label = "Auctionator - Auction Value" })
+    end
+    if TSMAPI and TSMAPI.GetPriceSources then
+        local ok, sources = pcall(TSMAPI.GetPriceSources, TSMAPI)
+        if ok and type(sources) == "table" then
+            local keys = {}
+            for k in pairs(sources) do
+                if TSM_SOURCE_WHITELIST[k] then tinsert(keys, k) end
+            end
+            table.sort(keys)
+            for _, k in ipairs(keys) do
+                tinsert(list, { key = "tsm:" .. k, label = "TSM: " .. tostring(sources[k]) })
+            end
+        end
+    end
+    return list
+end
+
+-- Compact colored money string: two most significant denominations.
+local function FormatMoney(copper)
+    local g = math.floor(copper / 10000)
+    local s = math.floor(copper / 100) % 100
+    local c = copper % 100
+    if g > 0 then
+        if s > 0 then
+            return string.format("%d|cffffd700g|r %d|cffc7c7cfs|r", g, s)
+        end
+        return string.format("%d|cffffd700g|r", g)
+    elseif s > 0 then
+        if c > 0 then
+            return string.format("%d|cffc7c7cfs|r %d|cffeda55fc|r", s, c)
+        end
+        return string.format("%d|cffc7c7cfs|r", s)
+    end
+    return string.format("%d|cffeda55fc|r", c)
 end
 
 --------------------------------------------------------------------------
@@ -258,6 +356,15 @@ local function CreateToast()
     t.sub:SetHeight(11)
     t.sub:SetJustifyH("LEFT")
 
+    -- Item value, right-aligned on the sub line. Ends at the text column's
+    -- right edge (x=234); the upgrade arrow starts at x=240, so they never
+    -- collide. Neutral money colors only — accent green stays an upgrade
+    -- promise. The font shadow keeps it readable over the faded scrim.
+    t.value = t:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    t.value:SetPoint("BOTTOMRIGHT", t, "BOTTOMRIGHT", -26, 9)
+    t.value:SetJustifyH("RIGHT")
+    t.value:SetTextColor(0.9, 0.9, 0.9)
+
     t.arrow = t:CreateTexture(nil, "OVERLAY")
     t.arrow:SetWidth(12)
     t.arrow:SetHeight(12)
@@ -278,9 +385,10 @@ local function CreateToast()
     return t
 end
 
--- data = { link, name, quality, texture, count, subText, upgrade }
+-- data = { link, name, quality, texture, count, subText, upgrade, value }
 -- upgrade = nil, or { pct, empty, levelLocked }; bag/slot when the looted
--- copy was located (used only to show the instance tooltip on hover).
+-- copy was located (used only to show the instance tooltip on hover);
+-- value = total worth of the stack in copper (nil = unknown, show nothing).
 SpawnToast = function(data)
     if #active >= MAX_ACTIVE then
         tinsert(overflow, data)
@@ -322,6 +430,18 @@ SpawnToast = function(data)
         t.sub:SetTextColor(0.55, 0.55, 0.60)
         t.arrow:Hide()
         t.holdTime = HOLD_TIME
+    end
+
+    -- Value shares the sub line; shrink the sub text so long labels never
+    -- run under the money.
+    if data.value then
+        t.value:SetText(FormatMoney(data.value))
+        t.value:Show()
+        t.sub:SetWidth(TOAST_WIDTH - 69 - t.value:GetStringWidth() - 6)
+    else
+        t.value:SetText("")
+        t.value:Hide()
+        t.sub:SetWidth(TOAST_WIDTH - 69)
     end
 
     t.phase = "in"
@@ -404,9 +524,17 @@ local function TryResolve(entry)
         end
     end
 
+    -- Stack worth: per-item value × looted count, under the configured
+    -- price source. nil (source off / item unknown to the AH DB) = no text.
+    local value
+    if tdb and tdb.showValue then
+        local unit = ItemValue(link, name)
+        if unit then value = unit * (entry.count or 1) end
+    end
+
     SpawnToast({ link = link, name = name, quality = quality,
         texture = texture, count = entry.count, subText = itemSubType,
-        upgrade = upgrade, bag = bag, slot = slot })
+        upgrade = upgrade, bag = bag, slot = slot, value = value })
     return true
 end
 
@@ -484,12 +612,15 @@ end
 local function SpawnTestToasts()
     local name, link, quality, _, _, _, subType, _, _, texture =
         GetItemInfo(6948) -- Hearthstone: always known to the client
+    -- Hearthstone vendors for 0, so the value is faked — the test exists
+    -- to preview the layout, money text included.
+    local value = (tdb and tdb.showValue) and 123456 or nil -- 12g 34s
     SpawnToast({ link = link, name = name or "Hearthstone",
         quality = quality, texture = texture, count = 1,
-        subText = subType })
+        subText = subType, value = value })
     SpawnToast({ link = link, name = name or "Hearthstone",
         quality = quality, texture = texture, count = 3,
-        upgrade = { pct = 12.5 } })
+        upgrade = { pct = 12.5 }, value = value })
 end
 
 -- Shared with RefactorUI.lua (the config window).
@@ -506,6 +637,7 @@ RefactorToastShared = {
         if anchorFrame and anchorFrame:IsShown() then ShowAnchor() end
     end,
     Test = SpawnTestToasts,
+    GetPriceSources = GetPriceSources,
     GetScale = Scale,
     SetScale = function(v)
         if not tdb then return end
@@ -537,6 +669,15 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         tdb = RefactorCompareDB.toast
         if tdb.enabled == nil then tdb.enabled = true end
         if tdb.scale == nil then tdb.scale = DEFAULT_SCALE end
+        if tdb.showValue == nil then tdb.showValue = true end
+        -- Only whitelisted AH sources are selectable now ("vendor" and
+        -- most tsm:* keys were dropped); migrate stale picks to auto.
+        local src = tdb.priceSource
+        local tsmKey = type(src) == "string" and src:match("^tsm:(.+)")
+        if src == nil or src == "vendor"
+            or (tsmKey and not TSM_SOURCE_WHITELIST[tsmKey]) then
+            tdb.priceSource = "auto"
+        end
     elseif event == "CHAT_MSG_LOOT" then
         OnLootMessage(arg1)
     end

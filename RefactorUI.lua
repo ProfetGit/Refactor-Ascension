@@ -411,6 +411,14 @@ local function BuildGeneralPage()
         "Marks bag items that beat your equipped gear under current weights.",
         function() return DB().bagIcons end,
         function(v) DB().bagIcons = v; RefreshBags() end))
+    y = y - 28
+
+    p:Track(MakeCheck(p, 0, y, CONTENT_W, "Smart equip rings, trinkets and weapons",
+        "Right-click equip replaces the weaker of the two equipped items " ..
+        "under current weights, instead of always the first slot. Needs " ..
+        "readable stats on both equipped items, or it leaves the click alone.",
+        function() return DB().smartEquip ~= false end,
+        function(v) DB().smartEquip = v end))
     y = y - 36
 
     -- Minimum quality: six swatches in item-quality colors. Qualities
@@ -909,6 +917,75 @@ local function BuildLootPage()
     end
     y = y - 28
 
+    -- Item value ------------------------------------------------------------
+    p:Track(MakeCheck(p, 0, y, CONTENT_W, "Show item value",
+        "Shows what the looted stack is worth on the toast's second line.",
+        function()
+            local t = TDB()
+            return t and t.showValue or false
+        end,
+        function(v)
+            local t = TDB()
+            if t then t.showValue = v end
+        end))
+    y = y - 30
+
+    do
+        local label = p:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        label:SetPoint("TOPLEFT", 0, y - 9)
+        label:SetText("Price source")
+
+        -- Sources are re-discovered every time the menu opens, so a TSM or
+        -- Auctionator install/removal is picked up without a /reload.
+        local dd = CreateFrame("Frame", "RefactorUIPriceSourceDropdown", p,
+            "UIDropDownMenuTemplate")
+        dd:SetPoint("TOPLEFT", 96, y + 4) -- template art carries ~16px side pads
+        UIDropDownMenu_SetWidth(dd, 190)
+        UIDropDownMenu_Initialize(dd, function()
+            local ts = RefactorToastShared
+            local t = TDB()
+            if not (ts and ts.GetPriceSources and t) then return end
+            for _, src in ipairs(ts.GetPriceSources()) do
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = src.label
+                info.checked = (t.priceSource == src.key)
+                info.func = function()
+                    t.priceSource = src.key
+                    RefactorUI.Refresh()
+                end
+                UIDropDownMenu_AddButton(info)
+            end
+        end)
+        dd.Refresh = function(self)
+            local ts = RefactorToastShared
+            local t = TDB()
+            if not (ts and ts.GetPriceSources and t) then
+                UIDropDownMenu_SetText(self, "")
+                return
+            end
+            -- A saved source whose addon is gone still shows its raw key, so
+            -- the player can see what's selected and why nothing prints.
+            local text = t.priceSource or "auto"
+            for _, src in ipairs(ts.GetPriceSources()) do
+                if src.key == t.priceSource then
+                    text = src.label
+                    break
+                end
+            end
+            UIDropDownMenu_SetText(self, text)
+        end
+        p:Track(dd)
+        local desc = "Where the value comes from — auction house prices only. " ..
+            "Auto tries TSM market value, then minimum buyout, then Auctionator. " ..
+            "These prices only exist for items you've scanned at the auction " ..
+            "house; when the source knows nothing, the toast shows no value. " ..
+            "Vendor sell price is never shown — addons can only read the base " ..
+            "item's price, which contradicts the scaled Sell Price in the tooltip."
+        Explain(dd, "Price source", desc)
+        RegisterOption("Price source", desc, p.pageKey)
+    end
+    y = y - 34
+
     local moveBtn
     moveBtn = MakeButton(p, 130, 22, "Move toasts", function()
         local ts = RefactorToastShared
@@ -1074,7 +1151,7 @@ local function BuildTweaksPage()
         "autoResBG")
     y = y - 28
     QolCheck(0, y, "Quick invite player",
-        "Alt + Right-Click a player's unit frame or name in chat to quickly invite them to your party.",
+        "Alt + Right-Click a player's unit frame, name in chat, or model in the world to quickly invite them to your party. Off by default.",
         "quickInvite")
     y = y - 36
 

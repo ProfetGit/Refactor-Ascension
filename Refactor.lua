@@ -52,7 +52,7 @@ local QOL_DEFAULTS = {
     declineGuilds = false, -- decline guild invites
     declineTrades = false, -- close trades from non-friend/guild/group players
     autoResBG = false,     -- accept player resurrections inside battlegrounds
-    quickInvite = true,    -- Alt + Right-Click: quick invite player
+    quickInvite = false,   -- Alt + Right-Click: quick invite player
     -- Moves items and equips a bag on your behalf when your bag slots are
     -- full; on by default per user request.
     seamlessBagUpgrade = true, -- right-click a bag: auto-swap in the smallest equipped bag
@@ -450,31 +450,70 @@ quest:RegisterEvent("QUEST_COMPLETE")
 -- ends the menu, and if the NPC reopens it afterwards the event just fires
 -- again for the next entry. Turn-ins go before pickups so a completed
 -- chain step is handed in before its follow-up is offered.
+local function DebugOn()
+    return type(RefactorCompareDB) == "table" and RefactorCompareDB.debug
+end
+
 local function SelectFromGossip()
     local numActive = GetNumGossipActiveQuests() or 0
+    local numAvailable = GetNumGossipAvailableQuests() or 0
+    if DebugOn() then
+        DEFAULT_CHAT_FRAME:AddMessage(("|cff33ff99Refactor debug:|r GOSSIP_SHOW active=%d available=%d")
+            :format(numActive, numAvailable))
+    end
     if numActive > 0 then
         local returns = { GetGossipActiveQuests() }
         for i = 1, numActive do
-            if IsLogQuestComplete(GossipQuestTitle(returns, numActive, i)) then
+            local title = GossipQuestTitle(returns, numActive, i)
+            local complete = IsLogQuestComplete(title)
+            if DebugOn() then
+                DEFAULT_CHAT_FRAME:AddMessage(("|cff33ff99Refactor debug:|r  active #%d '%s' logComplete=%s")
+                    :format(i, tostring(title), tostring(complete)))
+            end
+            if complete then
                 SelectGossipActiveQuest(i)
                 return true
             end
         end
     end
-    if (GetNumGossipAvailableQuests() or 0) > 0 then
+    if numAvailable > 0 then
         SelectGossipAvailableQuest(1)
         return true
+    end
+    -- A single quest embedded straight in the NPC's dialogue (as opposed to
+    -- a multi-quest hub) never populates GetGossip{Active,Available}Quests,
+    -- and its GetGossipOptions() type is plain "gossip" too — this server
+    -- has no client-side type marker for it at all. Ascension's own
+    -- convention is a literal "(Quest)" text prefix on the option title, so
+    -- that's the only signal available; match on it rather than type.
+    local options = { GetGossipOptions() }
+    for i = 1, #options, 2 do
+        local title = options[i]
+        if DebugOn() then
+            DEFAULT_CHAT_FRAME:AddMessage(("|cff33ff99Refactor debug:|r  option #%d '%s' type=%s")
+                :format((i + 1) / 2, tostring(title), tostring(options[i + 1])))
+        end
+        if type(title) == "string" and title:find("(Quest)", 1, true) then
+            SelectGossipOption((i + 1) / 2)
+            return true
+        end
     end
 end
 
 local function SelectFromGreeting()
-    for i = 1, GetNumActiveQuests() or 0 do
+    local numActive = GetNumActiveQuests() or 0
+    local numAvailable = GetNumAvailableQuests() or 0
+    if DebugOn() then
+        DEFAULT_CHAT_FRAME:AddMessage(("|cff33ff99Refactor debug:|r QUEST_GREETING active=%d available=%d")
+            :format(numActive, numAvailable))
+    end
+    for i = 1, numActive do
         if IsLogQuestComplete(GetActiveTitle(i)) then
             SelectActiveQuest(i)
             return true
         end
     end
-    if (GetNumAvailableQuests() or 0) > 0 then
+    if numAvailable > 0 then
         SelectAvailableQuest(1)
         return true
     end
@@ -606,6 +645,19 @@ function UnitPopup_ShowMenu(dropdownFrame, which, unit, name, userData)
     end
     return orig_UnitPopup_ShowMenu(dropdownFrame, which, unit, name, userData)
 end
+
+-- World clicks: the binding system calls the TurnOrActionStart C command
+-- directly, so a hooksecurefunc on the Lua global never fires from a real
+-- right-click — WorldFrame's mouse script is the only path that does.
+WorldFrame:HookScript("OnMouseDown", function(_, button)
+    if button ~= "RightButton" then return end
+    if Qol("quickInvite") and IsAltKeyDown() and UnitExists("mouseover") and UnitIsPlayer("mouseover") then
+        local name = UnitName("mouseover")
+        if name and name ~= UnitName("player") then
+            InviteUnit(name)
+        end
+    end
+end)
 
 --------------------------------------------------------------------------
 -- Errors: hide the red UI error text ("Ability is not ready yet" etc.)
