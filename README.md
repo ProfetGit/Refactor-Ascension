@@ -43,6 +43,7 @@ All individually toggleable:
 - Quick invite: Alt + Right-Click a player's unit frame, chat name, or model in the world to invite them to your party (off by default)
 - Fullscreen map as a movable, resizable window instead of a fullscreen blackout
 - Seamless bag upgrade: right-click a full bag to auto-swap in your smallest equipped bag
+- Leave party when clicking Leave Dungeon at the end of an instance (off by default)
 
 ### 🖥️ In-Game Config Window
 A clean, single-panel UI for everything above — no `/reload` required, changes apply instantly.

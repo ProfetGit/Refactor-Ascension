@@ -428,7 +428,15 @@ local function ShowCC(mech, icon, spellName, duration, expiration)
     f:Show()
 end
 
+-- Fingerprint of what the frame currently shows. UNIT_AURA fires for the
+-- player constantly in combat (procs, HoTs, everything), and while CC'd
+-- every one of those used to re-run the full restyle — SetScale,
+-- ClearAllPoints, SetPoint, SetTexture, SetCooldown — for an unchanged
+-- aura. Same key = frame already correct, skip it all.
+local shownKey
+
 local function HideCC()
+    shownKey = nil
     if frame then frame:Hide() end
 end
 
@@ -508,7 +516,16 @@ local function Update()
     end
 
     if bestMech then
-        ShowCC(bestMech, bestIcon, bestName, bestDur, bestExp)
+        -- Restyle only when the winning aura actually changed (new CC, or
+        -- the same one reapplied with a new expiration). The IsShown check
+        -- covers the frame's own OnUpdate hiding it at zero while the aura
+        -- lingers a moment longer server-side.
+        local key = bestMech .. ":" .. tostring(bestSpellId or bestName)
+            .. ":" .. tostring(bestExp)
+        if key ~= shownKey or not (frame and frame:IsShown()) then
+            shownKey = key
+            ShowCC(bestMech, bestIcon, bestName, bestDur, bestExp)
+        end
         if cdb.announce and not MECHANICS[bestMech].noAnnounce and not testUntil then
             local key = (bestSpellId or bestName) .. ":" .. tostring(bestExp)
             if key ~= announcedKey then
@@ -566,6 +583,7 @@ local function Test()
     testUntil = GetTime() + dur
     ShowCC("STUN", "Interface\\Icons\\Ability_MeleeDamage", "Test Stun",
         dur, GetTime() + dur)
+    shownKey = nil -- test content isn't a real aura: force the next real restyle
 end
 
 -- Shared with RefactorUI.lua (the config window).
@@ -599,6 +617,13 @@ RefactorCCShared = {
 -- Init & events
 --------------------------------------------------------------------------
 
+-- UNIT_AURA fires in bursts — several per frame in raid combat (procs,
+-- HoTs, everything) — and each one used to run the full debuff walk.
+-- GetTime() is frame-cached, so a same-timestamp guard collapses a burst
+-- to one scan per frame. Explicit callers (UI toggles, Test) go through
+-- RefactorCCShared.Update directly and skip the guard.
+local lastAuraStamp
+
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -618,7 +643,13 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         if cdb.announce == nil then cdb.announce = false end
         if cdb.scale == nil then cdb.scale = DEFAULT_SCALE end
     elseif event == "UNIT_AURA" then
-        if arg1 == "player" then Update() end
+        if arg1 == "player" then
+            local now = GetTime()
+            if now ~= lastAuraStamp then
+                lastAuraStamp = now
+                Update()
+            end
+        end
     elseif event == "PLAYER_ENTERING_WORLD" then
         Update()
     end

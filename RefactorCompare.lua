@@ -210,7 +210,12 @@ end
 
 -- Forward-declared: defined near the bottom (needs RefactorUI), but
 -- AutoApplyClassSpec above it wants to refresh an open config window.
+-- RefreshOpenBags likewise (defined mid-file): the armor auto-apply
+-- changes db.armorTypes, which moves verdicts, and with the generation-
+-- counted memos a verdict-moving change MUST refresh or the memos serve
+-- stale results until some unrelated refresh happens by.
 local RefreshConfig
+local RefreshOpenBags
 
 --------------------------------------------------------------------------
 -- Class/spec default weights
@@ -286,7 +291,7 @@ local CLASS_SPEC_WEIGHTS = {
         { name = "Farstrider", weights = { AGI = 1.39, CRIT = 0.53, HIT = 0.5, HASTE = 0.55, DPS = 14, AP = 1, ARP = 0.2, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     REAPER = {
-        { name = "Harvest",    weights = { STR = 2.347, AGI = 0.471, CRIT = 0.67, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Harvest",    weights = { STR = 0.471, AGI = 2.347, CRIT = 0.67, HIT = 0.5, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Soul",       weights = { STR = 2.2, AGI = 0.485, CRIT = 0.689, HASTE = 0.6, DPS = 14, AP = 1, ARP = 0.45, EXP = 0.5, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Domination", weights = { STR = 2.596, AGI = 1.53, STA = 1.2, CRIT = 0.35, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 1, ARP = 1.35, EXP = 0.5, ARMOR = 0.37, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, SOCKET = 20, UNKNOWN = 0.1 } },
     },
@@ -620,6 +625,7 @@ local function AutoApplyClassSpec()
             end
             Print("auto-selected armor type(s) " .. table.concat(armorList, "/") .. " for your class.")
             RefreshConfig()
+            if RefreshOpenBags then RefreshOpenBags() end
         end
     end
 
@@ -770,15 +776,49 @@ local STAT_NAME_KEYS = {
 -- because on Ascension two copies of one item can carry the same link
 -- with different scaled stats; a shared key lets one copy's stats answer
 -- for another and produces wildly wrong percentages. Instance entries
--- also expire after half a second: scaled stats can change outside
--- level-ups (rescale on equip etc.), so a scan is only trusted long
--- enough to dedupe one bag-redraw burst. "h:"..link base-item scans are
--- static, so they live until level-up.
+-- are invalidated event-driven: every path that can rescale an instance
+-- raises an event this file handles (equip -> UNIT_INVENTORY_CHANGED,
+-- bag changes -> BAG_UPDATE, level -> PLAYER_LEVEL_UP), and the debounced
+-- refresh below wipes the affected entries. The TTL is only a safety net
+-- for a rescale path that somehow has no event — it used to be the
+-- primary mechanism at 0.5s, which forced a full hidden-tooltip render +
+-- parse of both sides on nearly every hover and bag redraw. "h:"..link
+-- base-item scans are static, so they live until level-up.
 local scanCache = {}
-local INSTANCE_SCAN_TTL = 0.5
+local INSTANCE_SCAN_TTL = 10
+
+-- "h:" base-link scans never expire, so a long session of hovering chat
+-- links / AH listings piles them up; past the cap they're all dropped
+-- and rebuild on demand.
+local hScanCount = 0
+local H_SCAN_CAP = 500
+
+-- Everything derived from scans — equipped-slot scores, per-bag-slot
+-- verdicts — is memoized against this generation counter. RefreshOpenBags
+-- bumps it, and RefreshOpenBags is called on every state change that
+-- moves verdicts globally (equip events via the debounced flush, weight
+-- edits, profile switches, quality/armor filters, level-up), so a memo
+-- hit is always computed from current weights AND current gear. Bag-only
+-- changes don't bump it: the flush deletes just the dirty bags' verdict
+-- entries instead, since a bag change can't move the equipped scores or
+-- any other bag's verdicts.
+local generation = 0
+
+-- [invSlot] = { gen, link, score, dpsScore }. Only successful scores are
+-- memoized — an unreadable equipped item must stay a per-call retry
+-- (tooltip retries depend on it), never a cached failure.
+local equippedCache = {}
+
+-- ["bag:slot:link"] = { gen, result }. CompareItem results for bag slots:
+-- the arrows path re-evaluates every slot of every open bag on each
+-- redraw, and for unchanged slots this turns that into a table lookup.
+-- Only non-nil results are cached; nil can mean "scan not ready yet" and
+-- has to keep retrying.
+local verdictCache = {}
 
 local function WipeScanCache()
     for k in pairs(scanCache) do scanCache[k] = nil end
+    hScanCount = 0
 end
 
 local function WipeInstanceScans()
@@ -812,6 +852,219 @@ local function IsHardRequirementText(text, itemSubType)
         or text:match("^Classes:")
         or text:match("^Races:")
         or text == itemSubType
+end
+
+--------------------------------------------------------------------------
+-- Line parsing (hoisted out of ScanItem: defining these inline made every
+-- scan allocate three fresh closures — a full bag refresh scans ~100 items,
+-- hundreds of throwaway functions per redraw for this 2009-era client's GC
+-- to chew. The scan's result table is threaded through explicitly instead.)
+--------------------------------------------------------------------------
+
+local function ScanAddStat(result, name, amount, sign)
+    -- Normalize hard: scaled/suffix items have rendered stat names
+    -- with color codes and stray whitespace, and any mismatch here
+    -- silently reroutes a mapped stat (weight 0 included) into the
+    -- UNKNOWN fallback weight — e.g. +5 Spirit scoring 2.5 on a
+    -- Strength build.
+    name = name:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    name = name:lower():gsub("%.$", "")
+    name = name:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")
+    local value = (tonumber((amount:gsub(",", ""))) or 0) * (sign or 1)
+    -- "+4 All Stats" is five stats, not one unknown one.
+    if name == "all stats" or name == "to all stats" then
+        for _, n in ipairs({ "strength", "agility", "stamina",
+            "intellect", "spirit" }) do
+            result.stats[n] = (result.stats[n] or 0) + value
+        end
+        return
+    end
+    result.stats[name] = (result.stats[name] or 0) + value
+end
+
+-- Parses one stat line (already trimmed of surrounding whitespace).
+-- Returns true when the line was understood — including understood-
+-- and-worthless (flavor text stays false so the caller may try
+-- splitting it).
+local function ScanParseStatLine(result, line)
+    line = line:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    line = line:gsub("^%s+", ""):gsub("%s+$", "")
+    if line == "" then return true end
+    for _, n in ipairs(NORMALIZE_PATTERNS) do
+        line = line:gsub(n[1], n[2])
+    end
+
+    -- Weapon DPS, e.g. "(54.3 damage per second)".
+    local dps = line:match("%(([%d,%.]+) damage per second%)")
+    if dps then
+        result.dps = tonumber((dps:gsub(",", "")))
+        return true
+    end
+    -- "Adds N damage per second" (weapon enchants, Pawn's "Dps" stat).
+    dps = line:match("^Adds ([%d,%.]+) damage per second$")
+    if dps then
+        result.bonusDps = (result.bonusDps or 0)
+            + (tonumber((dps:gsub(",", ""))) or 0)
+        return true
+    end
+
+    -- Damage range: "126 - 190 Damage", wands' "76 - 143 Frost
+    -- Damage". Together with the right column's "Speed N" this
+    -- reconstructs DPS when the printed DPS line is missing.
+    local minD, maxD = line:match("^%+?([%d,]+) %- ([%d,]+) [%a ]-Damage$")
+    if minD then
+        result.minDamage = (result.minDamage or 0)
+            + (tonumber((minD:gsub(",", ""))) or 0)
+        result.maxDamage = (result.maxDamage or 0)
+            + (tonumber((maxD:gsub(",", ""))) or 0)
+        return true
+    end
+
+    if SOCKET_LINES[line] then
+        result.emptySockets = (result.emptySockets or 0) + 1
+        return true
+    end
+
+    -- "+N Name" / "-N Name": base stats, gems, enchants, custom
+    -- Ascension stats alike (negative stats exist, e.g. Kreeg's Mug).
+    -- Skipped when the line is compound — a separator followed by
+    -- another signed number ("+10 Agility and +15 Stamina") or a bare
+    -- number ("+21 Agility & 3% Increased Critical Damage": meta gems'
+    -- percent halves carry no sign) — or the greedy name capture would
+    -- swallow the whole tail as one bogus custom stat; the caller's
+    -- splitter handles those instead.
+    local compound = false
+    for _, sep in ipairs(STAT_SEPARATORS) do
+        if line:find(sep .. "+", 1, true)
+            or line:find(sep .. "-", 1, true)
+            or line:find(sep .. "%d") then
+            compound = true
+            break
+        end
+    end
+    if not compound then
+        local sign, amount, statName =
+            line:match("^([%+%-])([%d,]+)%s+(.+)$")
+        if amount then
+            ScanAddStat(result, statName, amount, sign == "-" and -1 or 1)
+            return true
+        end
+    end
+
+    -- "N% Name" percent effects — meta gems ("3% Increased Critical
+    -- Damage"), percent socket bonuses, custom Ascension lines. No
+    -- rating conversion exists for these, so each scores as a custom
+    -- "<name> %" stat: weight it via /rfc weight (or the UI's scanned-
+    -- stats list), UNKNOWN weight until then. Dropping them entirely
+    -- (the old behavior) undervalued every item carrying one.
+    local pctAmount, pctName = line:match("^%+?([%d%.]+)%% (.+)$")
+    if pctAmount then
+        ScanAddStat(result, pctName .. " %", pctAmount)
+        return true
+    end
+
+    local armor = line:match("^([%d,]+) Armor$")
+    if armor then
+        ScanAddStat(result, "armor", armor)
+        return true
+    end
+
+    -- Not stats, but needed by the stale-armor-render check in ScanItem:
+    -- the instance's scaled item level / required level, to tell a
+    -- scaled copy apart from the base item.
+    local ilvl = line:match("^Item Level ([%d,]+)$")
+    if ilvl then
+        result.itemLevel = tonumber((ilvl:gsub(",", "")))
+        return true
+    end
+    local reqLvl = line:match("^Requires Level ([%d,]+)$")
+    if reqLvl then
+        result.reqLevel = tonumber((reqLvl:gsub(",", "")))
+        return true
+    end
+
+    -- Specific "Equip:" shapes the generic patterns can't capture
+    -- cleanly, checked first so they don't land as ugly custom names.
+    local amt = line:match("^Equip: %+([%d,]+) Armor%.?$")
+    if amt then
+        ScanAddStat(result, "armor", amt)
+        return true
+    end
+    amt = line:match("^Equip: Increases damage and healing done by magical spells and effects by up to ([%d,]+)%.?$")
+    if amt then
+        ScanAddStat(result, "spell power", amt)
+        return true
+    end
+    local school
+    school, amt = line:match("^Equip: Increases damage done by (.-) spells and effects by up to ([%d,]+)%.?$")
+    if school then
+        ScanAddStat(result, school .. " spell damage", amt)
+        return true
+    end
+    amt = line:match("^Equip: Increases the block value of your shield by ([%d,]+)%.?$")
+    if amt then
+        ScanAddStat(result, "block value", amt)
+        return true
+    end
+    -- "Equip: Restores N mana/health per (or every) 5 sec."
+    local res
+    amt, res = line:match("^Equip: Restores ([%d,]+) (%a+) per 5 sec")
+    if not amt then
+        amt, res = line:match("^Equip: Restores ([%d,]+) (%a+) every 5 sec")
+    end
+    if amt then
+        ScanAddStat(result, res .. " per 5 sec", amt)
+        return true
+    end
+
+    -- Percent-based "Equip:" effects ("Equip: Improves your chance to
+    -- get a critical strike by 1%.") — the rating patterns below only
+    -- accept plain integers, so these parsed as prose and scored zero.
+    -- Same treatment as the bare "N% Name" lines above: a custom
+    -- "<name> %" stat at its own /rfc weight or UNKNOWN.
+    local pctEquipName, pctEquipAmount = line:match(
+        "^Equip: Increases (.-) by ([%d%.]+)%%%.?$")
+    if not pctEquipName then
+        pctEquipName, pctEquipAmount = line:match(
+            "^Equip: Improves (.-) by ([%d%.]+)%%%.?$")
+    end
+    if pctEquipName then
+        ScanAddStat(result, (pctEquipName:gsub("^your ", "")) .. " %", pctEquipAmount)
+        return true
+    end
+
+    -- Generic "Equip: Increases/Improves <stat> by N." rating lines.
+    for _, pattern in ipairs(EQUIP_PATTERNS) do
+        local name, a = line:match(pattern)
+        if name then
+            ScanAddStat(result, name, a)
+            return true
+        end
+    end
+    return false
+end
+
+-- Splits a compound line ("+10 Agility and +15 Stamina") on the
+-- highest-priority separator present and parses each piece; pieces
+-- may recursively split on lower-priority separators. (Pawn's
+-- PawnSeparators pass.)
+local function ScanSplitAndParse(result, text2, sepIndex)
+    for si = sepIndex, #STAT_SEPARATORS do
+        local sep = STAT_SEPARATORS[si]
+        if text2:find(sep, 1, true) then
+            local pos = 1
+            while pos do
+                local s, e = text2:find(sep, pos, true)
+                local chunk = s and text2:sub(pos, s - 1) or text2:sub(pos)
+                if not ScanParseStatLine(result, chunk) then
+                    ScanSplitAndParse(result, chunk, si + 1)
+                end
+                pos = e and (e + 1) or nil
+            end
+            return true
+        end
+    end
+    return false
 end
 
 -- Scans the item's tooltip and returns { stats, dps, unusable,
@@ -874,198 +1127,6 @@ local function ScanItem(link, bag, slot, invSlot, src)
         scanTip:SetHyperlink(link)
     end
 
-    local function AddStat(name, amount, sign)
-        -- Normalize hard: scaled/suffix items have rendered stat names
-        -- with color codes and stray whitespace, and any mismatch here
-        -- silently reroutes a mapped stat (weight 0 included) into the
-        -- UNKNOWN fallback weight — e.g. +5 Spirit scoring 2.5 on a
-        -- Strength build.
-        name = name:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-        name = name:lower():gsub("%.$", "")
-        name = name:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")
-        local value = (tonumber((amount:gsub(",", ""))) or 0) * (sign or 1)
-        -- "+4 All Stats" is five stats, not one unknown one.
-        if name == "all stats" or name == "to all stats" then
-            for _, n in ipairs({ "strength", "agility", "stamina",
-                "intellect", "spirit" }) do
-                result.stats[n] = (result.stats[n] or 0) + value
-            end
-            return
-        end
-        result.stats[name] = (result.stats[name] or 0) + value
-    end
-
-    -- Parses one stat line (already trimmed of surrounding whitespace).
-    -- Returns true when the line was understood — including understood-
-    -- and-worthless (flavor text stays false so the caller may try
-    -- splitting it).
-    local function ParseStatLine(line)
-        line = line:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-        line = line:gsub("^%s+", ""):gsub("%s+$", "")
-        if line == "" then return true end
-        for _, n in ipairs(NORMALIZE_PATTERNS) do
-            line = line:gsub(n[1], n[2])
-        end
-
-        -- Weapon DPS, e.g. "(54.3 damage per second)".
-        local dps = line:match("%(([%d,%.]+) damage per second%)")
-        if dps then
-            result.dps = tonumber((dps:gsub(",", "")))
-            return true
-        end
-        -- "Adds N damage per second" (weapon enchants, Pawn's "Dps" stat).
-        dps = line:match("^Adds ([%d,%.]+) damage per second$")
-        if dps then
-            result.bonusDps = (result.bonusDps or 0)
-                + (tonumber((dps:gsub(",", ""))) or 0)
-            return true
-        end
-
-        -- Damage range: "126 - 190 Damage", wands' "76 - 143 Frost
-        -- Damage". Together with the right column's "Speed N" this
-        -- reconstructs DPS when the printed DPS line is missing.
-        local minD, maxD = line:match("^%+?([%d,]+) %- ([%d,]+) [%a ]-Damage$")
-        if minD then
-            result.minDamage = (result.minDamage or 0)
-                + (tonumber((minD:gsub(",", ""))) or 0)
-            result.maxDamage = (result.maxDamage or 0)
-                + (tonumber((maxD:gsub(",", ""))) or 0)
-            return true
-        end
-
-        if SOCKET_LINES[line] then
-            result.emptySockets = (result.emptySockets or 0) + 1
-            return true
-        end
-
-        -- "+N Name" / "-N Name": base stats, gems, enchants, custom
-        -- Ascension stats alike (negative stats exist, e.g. Kreeg's Mug).
-        -- Skipped when the line is compound — a separator followed by
-        -- another signed number ("+10 Agility and +15 Stamina") or a bare
-        -- number ("+21 Agility & 3% Increased Critical Damage": meta gems'
-        -- percent halves carry no sign) — or the greedy name capture would
-        -- swallow the whole tail as one bogus custom stat; the caller's
-        -- splitter handles those instead.
-        local compound = false
-        for _, sep in ipairs(STAT_SEPARATORS) do
-            if line:find(sep .. "+", 1, true)
-                or line:find(sep .. "-", 1, true)
-                or line:find(sep .. "%d") then
-                compound = true
-                break
-            end
-        end
-        if not compound then
-            local sign, amount, statName =
-                line:match("^([%+%-])([%d,]+)%s+(.+)$")
-            if amount then
-                AddStat(statName, amount, sign == "-" and -1 or 1)
-                return true
-            end
-        end
-
-        -- "N% Name" percent effects — meta gems ("3% Increased Critical
-        -- Damage"), percent socket bonuses, custom Ascension lines. No
-        -- rating conversion exists for these, so each scores as a custom
-        -- "<name> %" stat: weight it via /rfc weight (or the UI's scanned-
-        -- stats list), UNKNOWN weight until then. Dropping them entirely
-        -- (the old behavior) undervalued every item carrying one.
-        local pctAmount, pctName = line:match("^%+?([%d%.]+)%% (.+)$")
-        if pctAmount then
-            AddStat(pctName .. " %", pctAmount)
-            return true
-        end
-
-        local armor = line:match("^([%d,]+) Armor$")
-        if armor then
-            AddStat("armor", armor)
-            return true
-        end
-
-        -- Specific "Equip:" shapes the generic patterns can't capture
-        -- cleanly, checked first so they don't land as ugly custom names.
-        local amt = line:match("^Equip: %+([%d,]+) Armor%.?$")
-        if amt then
-            AddStat("armor", amt)
-            return true
-        end
-        amt = line:match("^Equip: Increases damage and healing done by magical spells and effects by up to ([%d,]+)%.?$")
-        if amt then
-            AddStat("spell power", amt)
-            return true
-        end
-        local school
-        school, amt = line:match("^Equip: Increases damage done by (.-) spells and effects by up to ([%d,]+)%.?$")
-        if school then
-            AddStat(school .. " spell damage", amt)
-            return true
-        end
-        amt = line:match("^Equip: Increases the block value of your shield by ([%d,]+)%.?$")
-        if amt then
-            AddStat("block value", amt)
-            return true
-        end
-        -- "Equip: Restores N mana/health per (or every) 5 sec."
-        local res
-        amt, res = line:match("^Equip: Restores ([%d,]+) (%a+) per 5 sec")
-        if not amt then
-            amt, res = line:match("^Equip: Restores ([%d,]+) (%a+) every 5 sec")
-        end
-        if amt then
-            AddStat(res .. " per 5 sec", amt)
-            return true
-        end
-
-        -- Percent-based "Equip:" effects ("Equip: Improves your chance to
-        -- get a critical strike by 1%.") — the rating patterns below only
-        -- accept plain integers, so these parsed as prose and scored zero.
-        -- Same treatment as the bare "N% Name" lines above: a custom
-        -- "<name> %" stat at its own /rfc weight or UNKNOWN.
-        local pctEquipName, pctEquipAmount = line:match(
-            "^Equip: Increases (.-) by ([%d%.]+)%%%.?$")
-        if not pctEquipName then
-            pctEquipName, pctEquipAmount = line:match(
-                "^Equip: Improves (.-) by ([%d%.]+)%%%.?$")
-        end
-        if pctEquipName then
-            AddStat((pctEquipName:gsub("^your ", "")) .. " %", pctEquipAmount)
-            return true
-        end
-
-        -- Generic "Equip: Increases/Improves <stat> by N." rating lines.
-        for _, pattern in ipairs(EQUIP_PATTERNS) do
-            local name, a = line:match(pattern)
-            if name then
-                AddStat(name, a)
-                return true
-            end
-        end
-        return false
-    end
-
-    -- Splits a compound line ("+10 Agility and +15 Stamina") on the
-    -- highest-priority separator present and parses each piece; pieces
-    -- may recursively split on lower-priority separators. (Pawn's
-    -- PawnSeparators pass.)
-    local function SplitAndParse(text2, sepIndex)
-        for si = sepIndex, #STAT_SEPARATORS do
-            local sep = STAT_SEPARATORS[si]
-            if text2:find(sep, 1, true) then
-                local pos = 1
-                while pos do
-                    local s, e = text2:find(sep, pos, true)
-                    local chunk = s and text2:sub(pos, s - 1) or text2:sub(pos)
-                    if not ParseStatLine(chunk) then
-                        SplitAndParse(chunk, si + 1)
-                    end
-                    pos = e and (e + 1) or nil
-                end
-                return true
-            end
-        end
-        return false
-    end
-
     local stopParsing = false
     for i = 2, scanTip:NumLines() do
         local left = _G["RefactorCompareScanTipTextLeft" .. i]
@@ -1073,6 +1134,15 @@ local function ScanItem(link, bag, slot, invSlot, src)
         local text = left and left:GetText()
         local rightText = right and right:IsShown() and right:GetText()
         if text then
+            -- Raw-line dump: when a score looks impossible the fastest
+            -- diagnosis is the literal text the hidden tooltip rendered
+            -- (embedded \n bundles, unscaled lines), not the parsed stats.
+            if db and db.debug then
+                local lr, lg, lb = left:GetTextColor()
+                Print(string.format("line %d [%.1f %.1f %.1f]: '%s'%s",
+                    i, lr, lg, lb, (text:gsub("\n", "\\n")),
+                    rightText and (" | R: '" .. rightText .. "'") or ""))
+            end
             if IsRed(left) then
                 if db and db.debug then
                     Print("red left line " .. i .. ": '" .. text .. "'")
@@ -1128,11 +1198,11 @@ local function ScanItem(link, bag, slot, invSlot, src)
                     -- sockets match, grey when not.
                     local r, g = left:GetTextColor()
                     if r < 0.3 and g > 0.7 then
-                        if not ParseStatLine(bonus) then
-                            SplitAndParse(bonus, 1)
+                        if not ScanParseStatLine(result, bonus) then
+                            ScanSplitAndParse(result, bonus, 1)
                         end
                     end
-                elseif not ParseStatLine(line) then
+                elseif not ScanParseStatLine(result, line) then
                     -- Whole line not understood: try splitting compound
                     -- gem/enchant lines — but never prose sentences.
                     local noSplit = false
@@ -1142,7 +1212,7 @@ local function ScanItem(link, bag, slot, invSlot, src)
                             break
                         end
                     end
-                    if not noSplit then SplitAndParse(line, 1) end
+                    if not noSplit then ScanSplitAndParse(result, line, 1) end
                 end
             end
         end
@@ -1172,13 +1242,69 @@ local function ScanItem(link, bag, slot, invSlot, src)
     -- hyperlink the server won't answer) has no lines. Scoring it would
     -- fake a zero-stat item — "-100% downgrade" lies. Report failure and
     -- don't cache, so the next look retries.
-    result.failed = scanTip:NumLines() < 2
+    local numLines = scanTip:NumLines()
+    result.failed = numLines < 2
+
+    -- Stale armor render: the FIRST hidden-tooltip render of a scaled
+    -- instance after the client's data for it goes cold shows the BASE
+    -- item's armor line while everything else (stamina, required level,
+    -- item level) is already scaled. Observed live: a scaled 115-armor
+    -- bag chest scanning as 336 armor (the base item's famous value) with
+    -- its scaled ilvl/req intact — which painted +21% on a real -13%
+    -- downgrade, pinned for the whole hover because the 0.5s cache
+    -- answered the client's own corrective re-render. Detection: on a
+    -- scaled instance (scanned ilvl or req level differs from the base
+    -- item's) the armor MUST differ from base too, since armor is
+    -- computed from item level — so instance armor exactly equal to the
+    -- base scan's armor is that stale first render. Report it as a failed
+    -- scan (no cache, no verdict); the client's re-render or the next bag
+    -- refresh supplies the real values a moment later.
+    if not result.failed and instance
+        and result.stats.armor and result.stats.armor > 0 then
+        -- Base-link scan; recursing re-renders scanTip, safe because
+        -- every read of this scan's lines is already done above. Scaled-
+        -- ness is judged tooltip-vs-tooltip (this scan against the base
+        -- render's own Item Level / Requires Level lines) — NOT against
+        -- GetItemInfo, whose ilvl/req can disagree with even the base
+        -- tooltip on this client (seen live: an unscaled drop rendering
+        -- identical to its base render was still flagged "scaled" by the
+        -- GetItemInfo comparison, killing its verdict entirely).
+        local base = ScanItem(link)
+        if not base.failed then
+            local isScaled = (result.itemLevel and base.itemLevel
+                    and result.itemLevel ~= base.itemLevel)
+                or (result.reqLevel and base.reqLevel
+                    and result.reqLevel ~= base.reqLevel)
+            if isScaled and base.stats.armor == result.stats.armor then
+                result.failed = true
+                if db and db.debug then
+                    Print("stale armor render (base armor "
+                        .. base.stats.armor
+                        .. " on a scaled instance) — scan discarded, will retry")
+                end
+            end
+        end
+    end
+
     -- Roll scans are never cached: while the roll's item data is still
     -- arriving the client can render a partial tooltip that passes the
     -- NumLines check, and a cached partial would pin a wrong % for the
     -- whole TTL. Hovers are rare enough that rescanning is free.
     if not result.failed and not (src and src.roll) then
-        if instance then result.expires = GetTime() + INSTANCE_SCAN_TTL end
+        if instance then
+            result.expires = GetTime() + INSTANCE_SCAN_TTL
+        elseif scanCache[cacheKey] == nil then
+            -- Count only genuinely new keys: /rfc debug bypasses the cache
+            -- read and re-caches, and counting those overwrites inflated
+            -- the counter into premature cap purges.
+            hScanCount = hScanCount + 1
+            if hScanCount > H_SCAN_CAP then
+                for k in pairs(scanCache) do
+                    if k:sub(1, 2) == "h:" then scanCache[k] = nil end
+                end
+                hScanCount = 1
+            end
+        end
         scanCache[cacheKey] = result
     end
     if db and db.debug then
@@ -1186,7 +1312,7 @@ local function ScanItem(link, bag, slot, invSlot, src)
         for statName, amt in pairs(result.stats) do
             tinsert(parts, statName .. "=" .. amt)
         end
-        Print("scan [" .. cacheKey .. "] lines=" .. scanTip:NumLines()
+        Print("scan [" .. cacheKey .. "] lines=" .. numLines
             .. " stats: " .. (next(parts) and table.concat(parts, ", ") or "(none)")
             .. (result.dps and (" dps=" .. string.format("%.1f", result.dps)) or "")
             .. (result.emptySockets and (" sockets=" .. result.emptySockets) or "")
@@ -1273,8 +1399,18 @@ end
 local function ScoreEquipped(slot)
     local link = GetInventoryItemLink("player", slot)
     if not link then return nil end
+    -- Memoized per generation: equipped gear only changes on events that
+    -- bump the generation (equip, level, weight/profile edits), so one
+    -- score serves every bag slot of a whole redraw — and every hover in
+    -- between — instead of re-rendering the worn item's tooltip each time.
+    local c = equippedCache[slot]
+    if c and c.gen == generation and c.link == link then
+        return c.score, c.dpsScore
+    end
     local info = ScoreItem(link, nil, nil, slot)
-    if not info then return false end
+    if not info then return false end -- unreadable: retry next call, never memoized
+    equippedCache[slot] = { gen = generation, link = link,
+        score = info.score, dpsScore = info.dpsScore }
     return info.score, info.dpsScore
 end
 
@@ -1310,7 +1446,8 @@ end
 --   context = optional extra text, e.g. "vs main + off hand"
 --   approx  = true when scored from a bare link (base item, not the
 --             scaled instance): display as estimate, never as bag arrow
-local function CompareItem(link, bag, slot, invSlot, src)
+-- (Wrapped by CompareItem below, which memoizes bag-slot results.)
+local function CompareItemUncached(link, bag, slot, invSlot, src)
     local info = ScoreItem(link, bag, slot, invSlot, src)
     if not info then return nil end
     if info.quality < (db.minQuality or 0) then return nil end
@@ -1413,6 +1550,26 @@ local function CompareItem(link, bag, slot, invSlot, src)
         levelLocked = info.levelLocked, approx = info.approx }
 end
 
+-- Bag-slot lookups are the hot path: every open bag re-evaluates every
+-- slot on each redraw (ContainerFrame_Update / Bagnon hooks), so those
+-- results are memoized per location+link until the generation moves.
+-- Other sources (equipped invSlot, quest/roll/loot src) stay live — they
+-- carry their own retry semantics. nil results are never cached: nil can
+-- mean "scan not ready yet" and must keep retrying until it resolves.
+local function CompareItem(link, bag, slot, invSlot, src)
+    if bag ~= nil and slot ~= nil and invSlot == nil and src == nil then
+        local key = bag .. ":" .. slot .. ":" .. link
+        local hit = verdictCache[key]
+        if hit and hit.gen == generation then return hit.result end
+        local result = CompareItemUncached(link, bag, slot)
+        if result then
+            verdictCache[key] = { gen = generation, result = result }
+        end
+        return result
+    end
+    return CompareItemUncached(link, bag, slot, invSlot, src)
+end
+
 --------------------------------------------------------------------------
 -- Smart equip
 --
@@ -1438,10 +1595,18 @@ local SMART_EQUIP_SLOTS = {
     INVTYPE_WEAPON = { 16, 17 },
 }
 
+-- Exported via RefactorCompareShared: Refactor.lua's seamless bag upgrade
+-- checks it before starting its own item shuffle (and vice versa, via
+-- RefactorQoL.BagShuffleActive) — two concurrent PickupContainerItem
+-- sequences desync the cursor.
+local SmartEquipActive
+
 do
     local seFrame = CreateFrame("Frame")
     local se -- pending fix-up, nil when idle
     local seElapsed = 0
+
+    SmartEquipActive = function() return se ~= nil end
 
     local function StopSmartEquip()
         se = nil
@@ -1487,6 +1652,12 @@ do
     hooksecurefunc("UseContainerItem", function(bag, slot)
         if not db or not db.enabled or db.smartEquip == false then return end
         if se then return end -- a fix-up is already in flight
+        -- Seamless bag upgrade (Refactor.lua) mid-shuffle: its queue is
+        -- moving items through the same events; hands off until it's done.
+        if RefactorQoL and RefactorQoL.BagShuffleActive
+            and RefactorQoL.BagShuffleActive() then
+            return
+        end
         -- Right-click means sell/deposit/attach/trade while these are open.
         if (MerchantFrame and MerchantFrame:IsShown())
             or (BankFrame and BankFrame:IsShown())
@@ -1648,6 +1819,7 @@ local function AddCompareLine(tooltip, link, bag, slot, invSlot, src)
         ShowLineArrow(tooltip, fontString, r, g, b, arrowDir == "down")
     end
     tooltip:Show()
+    return true -- a verdict was drawn (callers retry while this is falsy)
 end
 
 -- Figure out which real item the tooltip is showing, so the scaled
@@ -1767,6 +1939,49 @@ local function LinkIsEquipped(link)
     return false
 end
 
+-- Verdict retry: some live sources start out unreadable — a loot-roll
+-- tooltip's first render can carry the stale base armor (see the
+-- stale-armor check in ScanItem) or its item data hasn't arrived yet —
+-- and unlike bag tooltips, the client doesn't always re-set those once
+-- the real data lands, so a verdict discarded at hover time would stay
+-- missing for the whole roll. While the same tooltip keeps showing the
+-- same link, re-run the pipeline every 0.25s until a verdict draws (or
+-- correctly stays absent: equipped-gear re-renders count as settled) or
+-- the attempts run out. Verdicts that are legitimately never shown
+-- (non-gear, quality-filtered) just let the retries expire silently.
+local tipRetryFrame = CreateFrame("Frame")
+tipRetryFrame:Hide()
+local tipRetryTip, tipRetryLink, tipRetryElapsed, tipRetryTries
+
+local function StartTipRetry(tip, link)
+    tipRetryTip, tipRetryLink = tip, link
+    tipRetryElapsed, tipRetryTries = 0, 8
+    tipRetryFrame:Show()
+end
+
+tipRetryFrame:SetScript("OnUpdate", function(self, elapsed)
+    tipRetryElapsed = tipRetryElapsed + elapsed
+    if tipRetryElapsed < 0.25 then return end
+    tipRetryElapsed = 0
+    local tip = tipRetryTip
+    local link = tip and tip:IsShown() and select(2, tip:GetItem())
+    if not link or link ~= tipRetryLink then
+        self:Hide()
+        return
+    end
+    tipRetryTries = tipRetryTries - 1
+    local done = false
+    local bag, slot, invSlot, src = GetTooltipSource(tip, link)
+    if src ~= false then
+        if not (bag or slot or invSlot or src) and LinkIsEquipped(link) then
+            done = true -- correctly verdict-free, stop retrying
+        else
+            done = AddCompareLine(tip, link, bag, slot, invSlot, src)
+        end
+    end
+    if done or tipRetryTries <= 0 then self:Hide() end
+end)
+
 local function HookTooltip(tip)
     tip:HookScript("OnTooltipSetItem", function(self)
         local _, link = self:GetItem()
@@ -1778,11 +1993,16 @@ local function HookTooltip(tip)
         if not link or self.refactorCompareDone == link then return end
         self.refactorCompareDone = link
         local bag, slot, invSlot, src = GetTooltipSource(self, link)
-        if src == false then return end -- live source pending: no guessing
+        if src == false then
+            StartTipRetry(self, link) -- live source pending: no guessing, but keep watching
+            return
+        end
         if not (bag or slot or invSlot or src) and LinkIsEquipped(link) then
             return
         end
-        AddCompareLine(self, link, bag, slot, invSlot, src)
+        if not AddCompareLine(self, link, bag, slot, invSlot, src) then
+            StartTipRetry(self, link)
+        end
     end)
     tip:HookScript("OnTooltipCleared", function(self)
         self.refactorCompareDone = nil
@@ -1996,10 +2216,14 @@ local function TryHookElvUI()
 end
 
 local UpdateQuestRewards -- defined in the quest-reward section below
+local StartRollUpdates -- defined in the loot-roll marker section below
 
--- Re-evaluate arrows on open bags when equipped gear changes (equipping
--- an upgrade makes the remaining bag copies stop being upgrades).
-local function RefreshOpenBags()
+-- Redraws every verdict-driven marker (stock and bag-addon slot buttons,
+-- quest reward markers, roll-frame arrows) against the current memo
+-- state. Invalidation is the caller's job: RefreshOpenBags for
+-- verdict-moving state changes, the bag-only flush below for single-bag
+-- churn.
+local function RedrawBags()
     for i = 1, NUM_CONTAINER_FRAMES do
         local frame = _G["ContainerFrame" .. i]
         if frame and frame:IsShown() then
@@ -2012,6 +2236,23 @@ local function RefreshOpenBags()
         end
     end
     if UpdateQuestRewards then UpdateQuestRewards() end
+    if StartRollUpdates then StartRollUpdates() end
+end
+
+-- Re-evaluate arrows on open bags when equipped gear changes (equipping
+-- an upgrade makes the remaining bag copies stop being upgrades).
+-- Assigns the forward-declared local near the top of the file.
+function RefreshOpenBags()
+    -- Every caller is a state change that moves verdicts globally (equip
+    -- events via the debounced flush, weight/profile/filter edits,
+    -- level-up) or an explicit "re-evaluate everything": invalidate the
+    -- score and verdict memos so this pass — and hovers after it —
+    -- recompute fresh. Bag-only changes deliberately do NOT come through
+    -- here (the flush takes the cheaper targeted path): they can't move
+    -- the equipped scores or other bags' verdicts.
+    generation = generation + 1
+    for k in pairs(verdictCache) do verdictCache[k] = nil end
+    RedrawBags()
 end
 
 --------------------------------------------------------------------------
@@ -2132,10 +2373,18 @@ local function UpdateQuestRewardsNow()
             else
                 link = GetQuestItemLink(button.type, idx)
             end
-            if not link or not GetItemInfo(link) then
+            -- One GetItemInfo call per button (this runs inside a retry
+            -- loop): name gates readiness, equipLoc routes the verdict,
+            -- sellPrice feeds the coin marker (nil on stock 3.3.5 — the
+            -- 11th return is 4.0+, kept in case Ascension backported it).
+            local name, equipLoc, sellPrice
+            if link then
+                local n, _, _, _, _, _, _, _, e, _, sp = GetItemInfo(link)
+                name, equipLoc, sellPrice = n, e, sp
+            end
+            if not name then
                 complete = false
             else
-                local equipLoc = select(9, GetItemInfo(link))
                 if equipLoc and SLOTS_FOR_INVTYPE[equipLoc] then
                     local result = CompareItem(link, nil, nil, nil,
                         { log = qlog, type = button.type, index = idx })
@@ -2152,11 +2401,8 @@ local function UpdateQuestRewardsNow()
                 end
                 if button.type == "choice" then
                     choiceCount = choiceCount + 1
-                    -- 3.3.5's GetItemInfo has no sellPrice return (that's
-                    -- 4.0+; try anyway in case Ascension backported it),
-                    -- so fall back to the money line scanned off the
-                    -- reward tooltip itself.
-                    local sellPrice = select(11, GetItemInfo(link))
+                    -- No sellPrice from GetItemInfo: fall back to the money
+                    -- line scanned off the reward tooltip itself.
                     if not sellPrice then
                         local scan = ScanItem(link, nil, nil, nil,
                             { log = qlog, type = button.type, index = idx })
@@ -2260,27 +2506,134 @@ if type(QuestInfo_Display) == "function" then
 end
 
 --------------------------------------------------------------------------
+-- Loot-roll upgrade markers
+--------------------------------------------------------------------------
+
+-- Green arrow on a group-loot roll frame's item icon when the rolled item
+-- is an upgrade — same promise as the bag/quest arrows, same trust rules
+-- (live SetLootRollItem scan via CompareItem's roll src, never approx).
+-- Roll item data trails the frame opening (and the first scans can be
+-- stale-armor discards), so this retries on a timer like the quest-reward
+-- markers do; roll frames stay up for the whole roll window, so the retry
+-- budget is generous.
+
+local NUM_ROLL_FRAMES = NUM_GROUP_LOOT_FRAMES or 4
+
+local function GetRollArrow(frame)
+    local arrow = frame.refactorRollArrow
+    if not arrow then
+        local anchor = _G[frame:GetName() .. "IconFrame"] or frame
+        arrow = anchor:CreateTexture(nil, "OVERLAY")
+        arrow:SetWidth(14)
+        arrow:SetHeight(14)
+        arrow:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", 2, 2)
+        if arrow:SetTexture(ARROW_TEXTURE) then
+            arrow:SetVertexColor(0, 1, 0)
+        else
+            arrow:SetTexture(0, 1, 0, 0.9)
+            arrow:SetWidth(10)
+            arrow:SetHeight(10)
+        end
+        frame.refactorRollArrow = arrow
+    end
+    return arrow
+end
+
+-- Recomputes every visible roll frame. Returns false when some roll's
+-- item wasn't readable yet so the caller keeps retrying.
+local function UpdateRollFramesNow()
+    local complete = true
+    for i = 1, NUM_ROLL_FRAMES do
+        local frame = _G["GroupLootFrame" .. i]
+        if frame then
+            local show = false
+            if frame:IsShown() and frame.rollID and db and db.enabled then
+                local link = GetLootRollItemLink
+                    and GetLootRollItemLink(frame.rollID)
+                -- One GetItemInfo call per frame per retry tick, not two.
+                local name, equipLoc
+                if link then
+                    local n, _, _, _, _, _, _, _, e = GetItemInfo(link)
+                    name, equipLoc = n, e
+                end
+                if not name then
+                    complete = false
+                else
+                    if equipLoc and SLOTS_FOR_INVTYPE[equipLoc] then
+                        local result = CompareItem(link, nil, nil, nil,
+                            { roll = frame.rollID })
+                        if not result then
+                            -- Scan pending / stale-armor discard: retry.
+                            -- (Quality-filtered gear lands here too; the
+                            -- retry cap keeps that harmless.)
+                            complete = false
+                        elseif not result.approx
+                            and (result.status == "upgrade"
+                                or result.status == "empty") then
+                            show = true
+                        end
+                    end
+                end
+            end
+            if show then
+                GetRollArrow(frame):Show()
+            elseif frame.refactorRollArrow then
+                frame.refactorRollArrow:Hide()
+            end
+        end
+    end
+    return complete
+end
+
+local rollRetryFrame = CreateFrame("Frame")
+rollRetryFrame:Hide()
+local rollRetryElapsed, rollRetriesLeft = 0, 0
+rollRetryFrame:SetScript("OnUpdate", function(self, elapsed)
+    rollRetryElapsed = rollRetryElapsed + elapsed
+    if rollRetryElapsed < 0.25 then return end
+    rollRetryElapsed = 0
+    rollRetriesLeft = rollRetriesLeft - 1
+    if UpdateRollFramesNow() or rollRetriesLeft <= 0 then
+        self:Hide()
+    end
+end)
+
+function StartRollUpdates()
+    if UpdateRollFramesNow() then
+        rollRetryFrame:Hide()
+    else
+        rollRetriesLeft = 20 -- 5s of retries; rolls stay up far longer
+        rollRetryElapsed = 0
+        rollRetryFrame:Show()
+    end
+end
+
+--------------------------------------------------------------------------
 -- Loot-moment alert
 --------------------------------------------------------------------------
 
 -- Turn a format string like "You receive loot: %sx%d." into a match
 -- pattern. Multi-stack formats go first so the "x3" suffix lands in the
--- %d slot instead of being swallowed by the greedy %s capture — though
--- either way the link is re-extracted from the capture by item-link
--- shape, so a stack suffix riding along was never actually harmful.
+-- %d capture instead of being swallowed by the greedy %s capture. The
+-- link is re-extracted from the %s capture by item-link shape either way.
 local function PatternFromFormat(fmt)
     fmt = fmt:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1")
     fmt = fmt:gsub("%%s", "(.+)")
-    fmt = fmt:gsub("%%d", "%%d+")
+    fmt = fmt:gsub("%%d", "(%%d+)")
     return "^" .. fmt .. "$"
 end
 
 local LOOT_SELF_PATTERNS = {
-    PatternFromFormat(LOOT_ITEM_SELF_MULTIPLE or "You receive loot: %sx%d."),
-    PatternFromFormat(LOOT_ITEM_PUSHED_SELF_MULTIPLE or "You receive item: %sx%d."),
-    PatternFromFormat(LOOT_ITEM_SELF or "You receive loot: %s."),
-    PatternFromFormat(LOOT_ITEM_PUSHED_SELF or "You receive item: %s."),
+    { pattern = PatternFromFormat(LOOT_ITEM_SELF_MULTIPLE or "You receive loot: %sx%d."), counted = true },
+    { pattern = PatternFromFormat(LOOT_ITEM_PUSHED_SELF_MULTIPLE or "You receive item: %sx%d."), counted = true },
+    { pattern = PatternFromFormat(LOOT_ITEM_SELF or "You receive loot: %s."), counted = false },
+    { pattern = PatternFromFormat(LOOT_ITEM_PUSHED_SELF or "You receive item: %s."), counted = false },
 }
+
+-- Self-loot lines are parsed exactly once for the whole addon, here, and
+-- fanned out as (link, count) — RefactorToast used to run its own
+-- identical CHAT_MSG_LOOT pattern pass for every loot line.
+local lootListeners = {}
 
 -- Items sometimes aren't in the client cache the instant the loot message
 -- arrives; retry once shortly after.
@@ -2288,9 +2641,29 @@ local pendingAlerts = {} -- link -> retries left
 local alertFrame = CreateFrame("Frame")
 local alertElapsed = 0
 
+-- Cheap pre-filter for the loot paths: is this link even gear we would
+-- evaluate? Most loot is junk, materials and quest items — walking the
+-- bags and running the compare pipeline for those was pure waste.
+-- Three-state: nil = GetItemInfo has no data yet (caller should retry),
+-- false = known non-gear or below the quality cutoff (skip everything),
+-- true = evaluatable gear.
+local function GearFilter(link)
+    local name, _, quality, _, _, _, _, _, equipLoc = GetItemInfo(link)
+    if not name then return nil end
+    if not equipLoc or not SLOTS_FOR_INVTYPE[equipLoc] then return false end
+    if quality and quality < (db and db.minQuality or 0) then return false end
+    return true
+end
+
 -- Locate a looted item in the bags so the scaled copy gets scanned; a
 -- bare link would score the base item.
 local function FindBagItem(link)
+    -- GetItemCount answers "not in the bags at all" from C code; skip the
+    -- per-slot Lua walk entirely for items we don't hold (guarded — this
+    -- custom client's API surface isn't taken for granted).
+    if type(GetItemCount) == "function" and GetItemCount(link) == 0 then
+        return
+    end
     for bag = 0, NUM_BAG_SLOTS do
         for slot = 1, GetContainerNumSlots(bag) do
             if GetContainerItemLink(bag, slot) == link then
@@ -2307,6 +2680,16 @@ end
 RefactorCompareShared = {
     CompareItem = CompareItem,
     FindBagItem = FindBagItem,
+    -- One CHAT_MSG_LOOT parse for the whole addon: fn(link, count) fires
+    -- for every self-loot line (RefactorToast subscribes here instead of
+    -- re-matching every loot line itself).
+    RegisterLootListener = function(fn) tinsert(lootListeners, fn) end,
+    -- True while the smart-equip fix-up is mid-swap (see the guard pair
+    -- with RefactorQoL.BagShuffleActive).
+    SmartEquipActive = SmartEquipActive,
+    -- Pre-filter (see GearFilter): lets the toast skip the bag walk and
+    -- compare pipeline for loot that could never earn an arrow.
+    IsGear = GearFilter,
     IsEnabled = function() return db and db.enabled or false end,
     -- Everything below exists for RefactorUI.lua (the config window),
     -- which owns all settings UI. SaveProfileAs/DeleteProfile are added
@@ -2331,6 +2714,12 @@ RefactorCompareShared = {
 }
 
 local function TryAlert(link)
+    -- Junk/materials can never alert: done immediately, no bag walk, no
+    -- compare. (The old code retried those for the full budget.) nil =
+    -- item data not client-cached yet — that's what the retries are for.
+    local gear = GearFilter(link)
+    if gear == false then return true end
+    if gear == nil then return false end
     local bag, slot = FindBagItem(link)
     local result = CompareItem(link, bag, slot)
     if not (bag and slot) and (result == nil or result.approx) then
@@ -2369,15 +2758,22 @@ alertFrame:SetScript("OnUpdate", function(self, elapsed)
 end)
 
 local function OnLootMessage(msg)
-    if not db or not db.enabled or not db.lootAlert then return end
-    for _, pattern in ipairs(LOOT_SELF_PATTERNS) do
-        local itemString = msg:match(pattern)
+    local wantAlert = db and db.enabled and db.lootAlert
+    if not wantAlert and #lootListeners == 0 then return end
+    for _, p in ipairs(LOOT_SELF_PATTERNS) do
+        local itemString, count = msg:match(p.pattern)
         if itemString then
             local link = itemString:match("|Hitem:.-|h%[.-%]|h")
-            if link and not TryAlert(link) then
-                pendingAlerts[link] = 3
-                alertElapsed = 0
-                alertFrame:Show()
+            if link then
+                if wantAlert and not TryAlert(link) then
+                    pendingAlerts[link] = 3
+                    alertElapsed = 0
+                    alertFrame:Show()
+                end
+                count = p.counted and tonumber(count) or 1
+                for _, fn in ipairs(lootListeners) do
+                    fn(link, count)
+                end
             end
             return
         end
@@ -2543,6 +2939,11 @@ SlashCmdList.REFACTORCOMPARE = function(msg)
             end
         end
         ActiveProfile().customWeights[lname] = value
+        -- Verdicts move with the weight: refresh (and bump the memo
+        -- generation) like the standard-stat branch above does — without
+        -- this the verdict/equipped memos keep serving old-weight scores.
+        RefreshOpenBags()
+        RefreshConfig()
         Print("custom stat '" .. lname .. "' weight set to " .. value .. ".")
     elseif cmd == "profile" then
         local sub, name = rest:match("^(%S*)%s*(.-)$")
@@ -2582,11 +2983,80 @@ end
 -- Init & events
 --------------------------------------------------------------------------
 
+-- UNIT_INVENTORY_CHANGED and BAG_UPDATE fire in bursts (one equip raises
+-- several of each). Wiping the scan cache and re-evaluating every open
+-- bag once PER EVENT was the addon's biggest frame-time spike — with a
+-- Bagnon wall of 100+ slots, each event cost 100+ hidden-tooltip renders.
+-- Instead: mark what went stale, flush once shortly after the burst ends.
+-- (Smart equip keeps its own immediate event frame — it must react the
+-- moment the engine's swap settles, and it does no scanning of its own.)
+local refreshFrame = CreateFrame("Frame")
+refreshFrame:Hide()
+local refreshElapsed = 0
+local invDirty = false -- equipped gear changed: every instance scan is suspect
+local dirtyBags = {}   -- [bagID] = true: that bag's instance scans are stale
+local REFRESH_DEBOUNCE = 0.15
+
+refreshFrame:SetScript("OnUpdate", function(self, elapsed)
+    refreshElapsed = refreshElapsed + elapsed
+    if refreshElapsed < REFRESH_DEBOUNCE then return end
+    self:Hide()
+    if invDirty then
+        -- Equipping can rescale items; drop all live scans so the refresh
+        -- compares against what's actually worn now.
+        WipeInstanceScans()
+    else
+        -- Bag-only change: a same-link different-instance copy can land in
+        -- a slot whose scan is still cached, so drop just those bags' scans.
+        for bagID in pairs(dirtyBags) do
+            local prefix = "b:" .. bagID .. ":"
+            for k in pairs(scanCache) do
+                if k:sub(1, #prefix) == prefix then scanCache[k] = nil end
+            end
+        end
+    end
+    -- Expired instance scans (quest-reward "q:" and loot-window "ls:" keys
+    -- especially) have no event that deletes them — without this sweep
+    -- they'd sit as dead weight until the next equip or level-up wiped
+    -- everything. Piggybacks on the iteration this flush already does.
+    local now = GetTime()
+    for k, v in pairs(scanCache) do
+        if v.expires and v.expires < now then scanCache[k] = nil end
+    end
+    if invDirty then
+        invDirty = false
+        for k in pairs(dirtyBags) do dirtyBags[k] = nil end
+        RefreshOpenBags()
+    else
+        -- Bag-only: equipped gear and weights are unchanged, so the
+        -- equipped-score memos and every untouched bag's verdicts are
+        -- still exact. Drop only the dirty bags' verdict entries and
+        -- redraw — clean slots answer from the warm memos instead of
+        -- re-running the whole scan pipeline (a one-slot loot into a
+        -- 100-slot bag wall used to recompute all 100).
+        for bagID in pairs(dirtyBags) do
+            local prefix = bagID .. ":"
+            for k in pairs(verdictCache) do
+                if k:sub(1, #prefix) == prefix then verdictCache[k] = nil end
+            end
+            dirtyBags[bagID] = nil
+        end
+        RedrawBags()
+    end
+end)
+
+local function QueueRefresh()
+    refreshElapsed = 0 -- true debounce: the burst's last event restarts the clock
+    refreshFrame:Show()
+end
+
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("CHAT_MSG_LOOT")
 eventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
+eventFrame:RegisterEvent("BAG_UPDATE")
 eventFrame:RegisterEvent("PLAYER_LEVEL_UP")
+eventFrame:RegisterEvent("START_LOOT_ROLL")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
         -- Bagnon/DragonUI/AdiBags/ElvUI can load before or after this
@@ -2620,12 +3090,20 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         end
     elseif event == "CHAT_MSG_LOOT" then
         OnLootMessage(arg1)
+    elseif event == "START_LOOT_ROLL" then
+        -- FrameXML's own handler opened the roll frame before this one
+        -- runs (it registered first); mark the icon if it's an upgrade.
+        StartRollUpdates()
     elseif event == "UNIT_INVENTORY_CHANGED" then
         if arg1 == "player" then
-            -- Equipping can rescale the item; drop instance scans so the
-            -- refresh below compares against what's actually worn now.
-            WipeInstanceScans()
-            RefreshOpenBags()
+            invDirty = true
+            QueueRefresh()
+        end
+    elseif event == "BAG_UPDATE" then
+        -- Player bags only; bank (-1, 5+) has no arrows or live scans.
+        if type(arg1) == "number" and arg1 >= 0 and arg1 <= NUM_BAG_SLOTS then
+            dirtyBags[arg1] = true
+            QueueRefresh()
         end
     elseif event == "PLAYER_LEVEL_UP" then
         -- Scaled item stats change with level; cached scans are stale.

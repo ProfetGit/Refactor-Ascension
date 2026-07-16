@@ -1153,6 +1153,10 @@ local function BuildTweaksPage()
     QolCheck(0, y, "Quick invite player",
         "Alt + Right-Click a player's unit frame, name in chat, or model in the world to quickly invite them to your party. Off by default.",
         "quickInvite")
+    y = y - 28
+    QolCheck(0, y, "Leave party on dungeon exit",
+        "Also leaves the party when you click the Leave Dungeon button at the end of a dungeon.",
+        "leavePartyOnDungeon")
     y = y - 36
 
     y = Section(child, "Bags", 0, y - 8, INNER_W)

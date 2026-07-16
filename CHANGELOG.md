@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.2]
+- **New: "Leave party on dungeon exit"** (`leavePartyOnDungeon`, off by default, Tweaks page) — clicking the Leave Dungeon button at the end of an instance also leaves your party, instead of just teleporting you out while the group stays formed.
+- **Performance pass across the addon** — several hot paths that ran on every event fired needlessly on nearly every one:
+  - Bag-slot verdicts and equipped-slot scores are now memoized against a generation counter, so a full bag redraw only re-scans slots that actually changed instead of every slot on every redraw.
+  - `UNIT_INVENTORY_CHANGED`/`BAG_UPDATE` handling is now debounced (0.15s) instead of re-scanning and redrawing every open bag once per individual event in a burst.
+  - Transmog auto-collect skips itemIDs it's already resolved this session instead of re-querying appearance data for the same stacked/repeated items on every `BAG_UPDATE`.
+  - The tooltip cursor-follow and lost-mouseover checks no longer do per-frame work when the mouse hasn't moved or the check isn't due yet.
+  - The crowd-control alert only restyles (rescale, reposition, re-texture, cooldown reset) when the winning debuff actually changes, instead of on every `UNIT_AURA` tick while CC'd.
+  - Loot toasts skip the bag-walk and upgrade-compare pipeline entirely for non-gear loot (the common case), and share one `CHAT_MSG_LOOT` parse with the bag-arrow/quest-reward code instead of parsing the same line twice.
+- Fixed the fast-loot CVar (`autoLootDefault`) only ever being set to `"1"`, never back to `"0"` — turning the option off left the engine auto-looting (with Shift now doing the opposite of what it should) until the next login.
+- Fixed `Qol("fastLoot")` throwing a nil-global error on login and every toggle — a forward-reference ordering bug introduced while wiring up the CVar fix.
+- Quick invite (Alt + Right-Click) is now a `hooksecurefunc` on `UnitPopup_ShowMenu` instead of replacing the global function — replacing it put addon code in the path of every unit right-click menu and could taint protected menu actions (Set Focus, etc.).
+- Smart equip and seamless bag upgrade now check each other before starting an item shuffle — running both at once on the same click could desync the cursor mid-sequence.
+
 ## [1.5.1]
 - **New: CC alert can announce to party/raid chat** (`RefactorCC.lua`, off by default) — posts a chat line ("Silenced! (Interdict, 3s)") the moment you're stunned, feared, silenced, or otherwise unable to cast, so healers and other key roles get an immediate heads-up to use cooldowns or play defensively. Fires once per CC application (not spammed every tick), auto-picks RAID/PARTY based on your group, and skips rooted/frozen/disarmed since those don't stop a cast bar. Solo with `/rfc debug` on, it echoes locally instead of silently doing nothing, so the toggle can be checked without grouping up.
 - **New: scale sliders for the loot toasts and the CC alert** — both the Loot page and the Tweaks page's Crowd control section now have a size slider, so either can be resized to taste independent of UI scale/resolution.

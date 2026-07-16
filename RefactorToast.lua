@@ -459,23 +459,6 @@ end
 -- Loot message parsing & resolution
 --------------------------------------------------------------------------
 
--- Turn "You receive loot: %sx%d." into a match pattern. Multi-stack
--- formats must be tried before the single ones — %s is greedy and would
--- swallow the "x3" suffix otherwise.
-local function PatternFromFormat(fmt)
-    fmt = fmt:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1")
-    fmt = fmt:gsub("%%s", "(.+)")
-    fmt = fmt:gsub("%%d", "(%%d+)")
-    return "^" .. fmt .. "$"
-end
-
-local LOOT_PATTERNS = {
-    { pattern = PatternFromFormat(LOOT_ITEM_SELF_MULTIPLE or "You receive loot: %sx%d."), counted = true },
-    { pattern = PatternFromFormat(LOOT_ITEM_PUSHED_SELF_MULTIPLE or "You receive item: %sx%d."), counted = true },
-    { pattern = PatternFromFormat(LOOT_ITEM_SELF or "You receive loot: %s."), counted = false },
-    { pattern = PatternFromFormat(LOOT_ITEM_PUSHED_SELF or "You receive item: %s."), counted = false },
-}
-
 -- Loot lines resolve asynchronously: the item may not be in the client
 -- cache when the message arrives, and the upgrade verdict needs the item
 -- to physically reach a bag slot so the scaled instance can be scanned.
@@ -504,10 +487,15 @@ local function TryResolve(entry)
     end
 
     -- Upgrade verdict wants the real bag copy (Ascension scaling: the
-    -- link alone reads the base item). Give it a moment to land.
+    -- link alone reads the base item). Give it a moment to land. Only
+    -- evaluatable gear pays for the bag walk and compare — junk and
+    -- materials (most loot) toast immediately with no verdict work, and
+    -- their hover tooltip falls back to the plain link, which is fine
+    -- since scaling only matters for gear.
     local shared = RefactorCompareShared
     local bag, slot, upgrade
-    if shared and shared.IsEnabled() then
+    if shared and shared.IsEnabled()
+        and (not shared.IsGear or shared.IsGear(link)) then
         bag, slot = shared.FindBagItem(link)
         if not bag and entry.retries > ARROW_WAIT_RETRIES then
             return false
@@ -553,23 +541,17 @@ resolveFrame:SetScript("OnUpdate", function(self, elapsed)
     if #pending == 0 then self:Hide() end
 end)
 
-local function OnLootMessage(msg)
+-- Fed by RefactorCompare's single CHAT_MSG_LOOT parse (see
+-- RegisterLootListener below) — this file no longer pattern-matches loot
+-- lines itself; the (link, count) arrive pre-extracted.
+local function OnLoot(link, count)
     if not tdb or not tdb.enabled then return end
-    for _, p in ipairs(LOOT_PATTERNS) do
-        local itemString, count = msg:match(p.pattern)
-        if itemString then
-            local link = itemString:match("|Hitem:.-|h%[.-%]|h")
-            if link then
-                local entry = { link = link, retries = RESOLVE_RETRIES,
-                    count = p.counted and tonumber(count) or 1 }
-                if not TryResolve(entry) then
-                    tinsert(pending, entry)
-                    resolveElapsed = 0
-                    resolveFrame:Show()
-                end
-            end
-            return
-        end
+    local entry = { link = link, retries = RESOLVE_RETRIES,
+        count = count or 1 }
+    if not TryResolve(entry) then
+        tinsert(pending, entry)
+        resolveElapsed = 0
+        resolveFrame:Show()
     end
 end
 
@@ -656,7 +638,14 @@ RefactorToastShared = {
 
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
-eventFrame:RegisterEvent("CHAT_MSG_LOOT")
+-- RefactorCompare.lua loads first (see the .toc) and parses CHAT_MSG_LOOT
+-- once for the whole addon; subscribe to its dispatch. Only if that file
+-- somehow failed to load would this file need its own event — and with the
+-- compare pipeline gone the toasts would miss upgrade data anyway, so
+-- there's no fallback parser: no dispatcher, no toasts.
+if RefactorCompareShared and RefactorCompareShared.RegisterLootListener then
+    RefactorCompareShared.RegisterLootListener(OnLoot)
+end
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
         if arg1 ~= "Refactor" then return end
@@ -678,7 +667,5 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
             or (tsmKey and not TSM_SOURCE_WHITELIST[tsmKey]) then
             tdb.priceSource = "auto"
         end
-    elseif event == "CHAT_MSG_LOOT" then
-        OnLootMessage(arg1)
     end
 end)

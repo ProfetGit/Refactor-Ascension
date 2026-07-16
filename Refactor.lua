@@ -17,6 +17,9 @@
 --------------------------------------------------------------------------
 
 local qdb -- RefactorCompareDB.qol once saved variables exist
+local Qol -- forward-declared: ApplyFastLootCVar below is compiled before
+          -- Qol's definition, and without this it resolved as a GLOBAL
+          -- (nil) — erroring on login and on every fastLoot toggle
 
 local QOL_DEFAULTS = {
     -- Collecting an appearance soulbinds the item, so auto-collect ships
@@ -53,10 +56,17 @@ local QOL_DEFAULTS = {
     declineTrades = false, -- close trades from non-friend/guild/group players
     autoResBG = false,     -- accept player resurrections inside battlegrounds
     quickInvite = false,   -- Alt + Right-Click: quick invite player
+    leavePartyOnDungeon = false, -- also leave party when clicking Leave Dungeon
     -- Moves items and equips a bag on your behalf when your bag slots are
     -- full; on by default per user request.
     seamlessBagUpgrade = true, -- right-click a bag: auto-swap in the smallest equipped bag
 }
+
+local function ApplyFastLootCVar()
+    -- Written both ways: only ever setting "1" left the engine
+    -- auto-looting (shift-inverted) after the flag was unticked.
+    SetCVar("autoLootDefault", Qol("fastLoot") and "1" or "0")
+end
 
 local function InitQol()
     if qdb or type(RefactorCompareDB) ~= "table" then return end
@@ -80,9 +90,10 @@ local function InitQol()
                 " tradeable items).")
         end
     end
+    ApplyFastLootCVar()
 end
 
-local function Qol(key)
+function Qol(key) -- assigns the forward-declared local above
     if qdb and qdb[key] ~= nil then return qdb[key] end
     return QOL_DEFAULTS[key]
 end
@@ -107,6 +118,7 @@ RefactorQoL = {
         if qdb then qdb[key] = value and true or false end
         if key == "muteErrorSpeech" then ApplyErrorSpeech() end
         if key == "fullMapWindow" and ApplyFullMapWindow then ApplyFullMapWindow() end
+        if key == "fastLoot" then ApplyFastLootCVar() end
     end,
 }
 
@@ -114,7 +126,6 @@ local f = CreateFrame("Frame")
 f:RegisterEvent("BAG_UPDATE")
 f:RegisterEvent("PLAYER_ENTERING_WORLD")
 
-local pendingScan = false
 local timeSinceUpdate = 0
 local DEBOUNCE_DELAY = 0.5 -- seconds to wait after the last bag change before scanning
 
@@ -153,6 +164,15 @@ local function IsBagItemBound(bag, slot)
     return false
 end
 
+-- Session memo: itemIDs that can never need collecting again (no
+-- appearance, or the appearance is already collected). BAG_UPDATE fires
+-- constantly while playing and every scan used to re-query C_Appearance
+-- for the whole bag contents; with the memo only new/uncollected items
+-- pay. Deliberately NOT set after CollectItemAppearance — the confirm-
+-- popup path may not complete — so a collect is memoized on the next
+-- scan, once IsAppearanceCollected actually reports it.
+local transmogDone = {}
+
 -- Same logic as your manual macro, just wrapped in a function so it can be
 -- triggered automatically instead of typed in.
 local function ScanBagsForTransmog()
@@ -167,10 +187,11 @@ local function ScanBagsForTransmog()
         local numSlots = GetContainerNumSlots(b)
         for s = 1, numSlots do
             local itemID = GetContainerItemID(b, s)
-            if itemID then
+            if itemID and not transmogDone[itemID] then
                 local appearanceID = C_Appearance.GetItemAppearanceID(itemID)
-                if appearanceID and not c.IsAppearanceCollected(appearanceID)
-                    and (includeUnbound or IsBagItemBound(b, s)) then
+                if not appearanceID or c.IsAppearanceCollected(appearanceID) then
+                    transmogDone[itemID] = true
+                elseif includeUnbound or IsBagItemBound(b, s) then
                     local itemGUID = GetContainerItemGUID(b, s)
                     if itemGUID then
                         c.CollectItemAppearance(itemGUID)
@@ -214,6 +235,18 @@ hooksecurefunc("StaticPopup_Show", function(which)
     end
 end)
 
+-- Debounce with OnUpdate rather than C_Timer, since C_Timer's availability
+-- on this client isn't guaranteed the way basic frame scripts are. The
+-- handler detaches itself once it fires, so an idle frame costs nothing
+-- per frame — it only ticks between a BAG_UPDATE burst and its scan.
+local function TransmogDebounce(self, elapsed)
+    timeSinceUpdate = timeSinceUpdate + elapsed
+    if timeSinceUpdate >= DEBOUNCE_DELAY then
+        self:SetScript("OnUpdate", nil)
+        ScanBagsForTransmog()
+    end
+end
+
 f:SetScript("OnEvent", function(self, event)
     if event == "PLAYER_ENTERING_WORLD" then
         InitQol() -- saved variables (and RefactorCompare's init) are done by now
@@ -221,24 +254,19 @@ f:SetScript("OnEvent", function(self, event)
         -- The friends list is empty client-side until the server sends it;
         -- request it now so the trade-window whitelist can check it.
         ShowFriends()
+        -- Don't fall through into the transmog debounce: login isn't a
+        -- bag change, and the login flood of BAG_UPDATEs triggers the
+        -- scan anyway while the flag is on.
+        return
     end
     -- BAG_UPDATE fires whenever any bag's contents change, which covers
     -- looting, vendoring, mailing, etc. We don't rely on a more specific
     -- "loot" event since this custom client's event set isn't guaranteed.
-    pendingScan = true
+    -- Auto-collect ships off; don't even run the debounce ticker for it.
+    -- (Toggling it on mid-session picks up from the next bag change.)
+    if not Qol("transmog") then return end
     timeSinceUpdate = 0
-end)
-
--- Debounce with OnUpdate rather than C_Timer, since C_Timer's availability
--- on this client isn't guaranteed the way basic frame scripts are.
-f:SetScript("OnUpdate", function(self, elapsed)
-    if pendingScan then
-        timeSinceUpdate = timeSinceUpdate + elapsed
-        if timeSinceUpdate >= DEBOUNCE_DELAY then
-            pendingScan = false
-            ScanBagsForTransmog()
-        end
-    end
+    self:SetScript("OnUpdate", TransmogDebounce)
 end)
 
 --------------------------------------------------------------------------
@@ -259,22 +287,38 @@ hooksecurefunc("GameTooltip_SetDefaultAnchor", function(tooltip, parent)
     -- doesn't follow it, so use ANCHOR_NONE and position it ourselves.
     tooltip:SetOwner(parent, "ANCHOR_NONE")
     tooltip.refactorCursorAnchor = true
+    tooltip.refactorCursorX = nil -- force a repoint on the first frame
 end)
 
 local function PositionAtCursor(tooltip)
     local x, y = GetCursorPosition()
+    -- Mouse hasn't moved since last frame: the point is already right;
+    -- skip the per-frame ClearAllPoints/SetPoint churn.
+    if tooltip.refactorCursorX == x and tooltip.refactorCursorY == y then
+        return
+    end
+    tooltip.refactorCursorX, tooltip.refactorCursorY = x, y
     local scale = tooltip:GetEffectiveScale()
     tooltip:ClearAllPoints()
     tooltip:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT",
         x / scale + TOOLTIP_CURSOR_OFFSET_X, y / scale)
 end
 
-GameTooltip:HookScript("OnUpdate", function(self)
+-- The lost-mouseover check below needs at most ~10 Hz to still read as
+-- instant; unthrottled it was two C calls per frame for every tooltip,
+-- item hovers included, for the whole session.
+local UNIT_CHECK_INTERVAL = 0.1
+local unitCheckElapsed = 0
+
+GameTooltip:HookScript("OnUpdate", function(self, elapsed)
     if self.refactorCursorAnchor then
-        PositionAtCursor(self)
+        PositionAtCursor(self) -- per-frame: the cursor follow must be smooth
     end
     -- The client fades unit tooltips out from C code (a Lua hook on FadeOut
     -- never fires), so detect the lost mouseover ourselves and hide instantly.
+    unitCheckElapsed = unitCheckElapsed + elapsed
+    if unitCheckElapsed < UNIT_CHECK_INTERVAL then return end
+    unitCheckElapsed = 0
     if self:GetUnit() and not UnitExists("mouseover") then
         self:Hide()
     end
@@ -347,14 +391,12 @@ end)
 -- Hold Shift while looting to get the normal window instead.
 --------------------------------------------------------------------------
 
-local FASTLOOT_RETRY_DELAY = 0.25 -- seconds between passes, in case the server throttles loot
-local FASTLOOT_MAX_PASSES = 4     -- initial pass + retries before giving up (bags full etc.)
+local FASTLOOT_CHECK_DELAY = 0.5 -- seconds before checking whether loot remains
 
 local fastLoot = CreateFrame("Frame")
 fastLoot:RegisterEvent("LOOT_OPENED")
 fastLoot:RegisterEvent("LOOT_CLOSED")
 
-local lootPassesLeft = 0
 local timeSinceLootPass = 0
 
 -- The window is hidden via alpha (not :Hide()) so the loot session stays
@@ -365,48 +407,39 @@ local function SetLootWindowVisible(visible)
     end
 end
 
-local function LootRemainingSlots()
+-- Attached only between LOOT_OPENED and its one check (or LOOT_CLOSED);
+-- detaches itself so an idle frame costs nothing per frame. The engine's
+-- autoLootDefault CVar does the actual looting — this only reveals the
+-- window again if anything is left over (bags full, unique item).
+local function FastLootCheck(self, elapsed)
+    timeSinceLootPass = timeSinceLootPass + elapsed
+    if timeSinceLootPass < FASTLOOT_CHECK_DELAY then return end
+    self:SetScript("OnUpdate", nil)
     local remaining = 0
-    for i = GetNumLootItems(), 1, -1 do
-        -- Cleared slots keep their index until the window closes; a nil
-        -- texture means the slot was already looted.
+    for i = 1, GetNumLootItems() do
         if GetLootSlotInfo(i) then
-            LootSlot(i)
             remaining = remaining + 1
         end
     end
-    return remaining
+    if remaining > 0 then
+        -- Loot remains, show the window so the player can loot manually
+        SetLootWindowVisible(true)
+    end
 end
 
 fastLoot:SetScript("OnEvent", function(self, event)
     if event == "LOOT_OPENED" then
         if IsShiftKeyDown() or not Qol("fastLoot") then
-            lootPassesLeft = 0
+            self:SetScript("OnUpdate", nil)
             SetLootWindowVisible(true)
             return
         end
         SetLootWindowVisible(false)
-        lootPassesLeft = FASTLOOT_MAX_PASSES - 1
         timeSinceLootPass = 0
-        LootRemainingSlots()
+        self:SetScript("OnUpdate", FastLootCheck)
     elseif event == "LOOT_CLOSED" then
-        lootPassesLeft = 0
+        self:SetScript("OnUpdate", nil)
         SetLootWindowVisible(true) -- restore for whatever opens it next
-    end
-end)
-
-fastLoot:SetScript("OnUpdate", function(self, elapsed)
-    if lootPassesLeft <= 0 then return end
-    timeSinceLootPass = timeSinceLootPass + elapsed
-    if timeSinceLootPass < FASTLOOT_RETRY_DELAY then return end
-    timeSinceLootPass = 0
-    lootPassesLeft = lootPassesLeft - 1
-    if LootRemainingSlots() == 0 then
-        lootPassesLeft = 0
-    elseif lootPassesLeft == 0 then
-        -- Something refused to loot (bags full, unique item already owned):
-        -- reveal the window so the leftovers can be handled by hand.
-        SetLootWindowVisible(true)
     end
 end)
 
@@ -628,23 +661,24 @@ end)
 -- Social: Alt + Right-Click a player to quickly invite them
 --------------------------------------------------------------------------
 
-local orig_UnitPopup_ShowMenu = UnitPopup_ShowMenu
-function UnitPopup_ShowMenu(dropdownFrame, which, unit, name, userData)
-    if Qol("quickInvite") and IsAltKeyDown() and (unit or name) then
-        local targetName = name
-        if unit then
-            if not UnitIsPlayer(unit) then
-                return orig_UnitPopup_ShowMenu(dropdownFrame, which, unit, name, userData)
-            end
-            targetName = UnitName(unit)
-        end
-        if targetName and targetName ~= UnitName("player") then
-            InviteUnit(targetName)
-            return
-        end
+-- Post-hook, NOT a global replacement: swapping the UnitPopup_ShowMenu
+-- global put addon code in the path of every unit right-click menu, and
+-- on 3.3.5 dropdown taint blocks protected menu actions (Set Focus etc.)
+-- — same lesson as the UseContainerItem hooks elsewhere in this addon.
+-- The menu can't be preempted from a post-hook, so it's closed right
+-- after opening instead; the one-frame flicker is the taint-free price.
+hooksecurefunc("UnitPopup_ShowMenu", function(dropdownFrame, which, unit, name)
+    if not Qol("quickInvite") or not IsAltKeyDown() then return end
+    local targetName = name
+    if unit then
+        if not UnitIsPlayer(unit) then return end
+        targetName = UnitName(unit)
     end
-    return orig_UnitPopup_ShowMenu(dropdownFrame, which, unit, name, userData)
-end
+    if targetName and targetName ~= UnitName("player") then
+        CloseDropDownMenus()
+        InviteUnit(targetName)
+    end
+end)
 
 -- World clicks: the binding system calls the TurnOrActionStart C command
 -- directly, so a hooksecurefunc on the Lua global never fires from a real
@@ -658,6 +692,18 @@ WorldFrame:HookScript("OnMouseDown", function(_, button)
         end
     end
 end)
+
+--------------------------------------------------------------------------
+-- Dungeons: leave party when clicking the Leave Dungeon button
+--------------------------------------------------------------------------
+
+if LFDLeaveFrameLeaveButton then
+    LFDLeaveFrameLeaveButton:HookScript("OnClick", function()
+        if Qol("leavePartyOnDungeon") then
+            LeaveParty()
+        end
+    end)
+end
 
 --------------------------------------------------------------------------
 -- Errors: hide the red UI error text ("Ability is not ready yet" etc.)
@@ -1080,6 +1126,13 @@ do
     local function TryBagUpgrade(bag, slot)
         if not Qol("seamlessBagUpgrade") then return false end
         if bu then return false end -- a sequence is already running
+        -- Smart equip (RefactorCompare) may be mid-swap on its own
+        -- PickupContainerItem sequence; two concurrent shuffles desync
+        -- the cursor. Each side checks the other before arming.
+        local cs = RefactorCompareShared
+        if cs and cs.SmartEquipActive and cs.SmartEquipActive() then
+            return false
+        end
         if InCombatLockdown() then return false end
         if BankFrame and BankFrame:IsShown() then return false end -- right-click there means bank deposit/equip
         if MerchantFrame and MerchantFrame:IsShown() then return false end -- right-click there means sell to vendor
@@ -1185,6 +1238,10 @@ do
         })
         return true
     end
+
+    -- Smart equip (RefactorCompare) checks this before arming its own
+    -- item shuffle — see the matching guard in TryBagUpgrade above.
+    RefactorQoL.BagShuffleActive = function() return bu ~= nil end
 
     -- Reacting via hooksecurefunc (not replacing the global) keeps every
     -- other UseContainerItem call — eating food, opening lockboxes, using
