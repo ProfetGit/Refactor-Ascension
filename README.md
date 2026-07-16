@@ -2,6 +2,8 @@
 
 A World of Warcraft addon for **[Ascension](https://ascension.gg)**, a custom classless WotLK 3.3.5 server. Refactor scores your gear against your own stat priorities, tells you the moment an item is an upgrade, and smooths out a pile of everyday annoyances — auto-loot, quest automation, transmog collection, and more.
 
+[![Ko-fi](https://img.shields.shields.shields.io/badge/Ko--fi-F16061?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/profetgit)
+
 > Built specifically for Ascension's Conquest of Azeroth system: 21 classes × 3-4 talent specs, each with hand-tuned default stat weights, plus support for Ascension's server-side item scaling that most gear-scoring addons don't account for.
 
 ---
@@ -119,6 +121,13 @@ You can also open the config window from the **minimap button** — left-click t
 
 Issues and pull requests are welcome. If you're proposing new default stat weights for a class/spec, please explain your reasoning (source theorycraft, Pawn string, etc.) in the PR description.
 
+## Support
+
+If you enjoy this addon and would like to support its development, you can buy me a coffee on Ko-fi!
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/profetgit)
+
 ## License
 
 [MIT](LICENSE) — do whatever you want with it, just keep the copyright notice.
+
