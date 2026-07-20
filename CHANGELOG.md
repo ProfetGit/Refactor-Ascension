@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.3]
+- **New: world map zoom, pan and class icons** (`RefactorMap.lua`, ported from Magnify-WotLK) — scroll over the map to zoom in/out, click-drag to pan while zoomed (`mapZoom`, on by default), party/raid members shown as class-colored dots (`mapClassIcons`, on by default), optional player/cursor coordinates (`mapCoords`, off by default) and fade-map-while-moving (`mapMoveFade`, off by default). Stands down when Leatrix Maps is loaded (it ships the same port, and stacked hooks drift quest markers); Mapster and ElvUI map layouts are accommodated.
+- **New: merchant automation** — auto-sell all poor-quality (gray) items (`autoSellTrash`) and auto-repair using your own money, never the guild bank (`autoRepair`), both off by default on the Tweaks page, both skipped while Shift is held, each printing a chat summary only when it actually did something.
+- **New: version check** (`versionCheck`, on by default, General page) — prints a chat line when a guild or group member runs a newer Refactor. Versions travel on hidden addon messages; broadcasting is unconditional (it's how others learn), the flag only gates your own notice.
+- **New: "Disable all" / "Restore defaults" buttons** at the top of the Tweaks page (both behind a confirm popup) — flip every QoL tweak off so you can opt back in one at a time, or restore the shipped defaults. Map window position/scale, the minimap button and the CC alert position are untouched.
+- **Defaults changed for new installs**: quest automation (accept / turn-in / gossip) and the movable fullscreen map now ship OFF. Existing saved settings are untouched.
+- **Movable-map conflict handling** (`fullMapWindow`) — stands down when Leatrix Maps, Mapster, or ElvUI's smaller world map owns the map (it used to fight their layouts), hands the map mode back after login when another addon manages it, and no longer touches the protected map tree during combat (retries when combat ends).
+- **Map module correctness/performance fixes** from a full audit:
+  - Quest POI markers could drift off their location (x/s²) when the quest-update hook fired more than once per zoom step — each button's original anchor is now recovered from the recorded output, making the resize pass re-entrant.
+  - Zooming, opening the map, or panning during combat could hit blocked protected-frame actions — zoom is now gated during combat, and quest-blob redraws and the map layout pass are deferred to `PLAYER_REGEN_ENABLED`.
+  - Reopening the map no longer leaves stale zoom state behind (a drag could previously pan an unzoomed map against old bounds).
+  - Plain map clicks no longer trigger a full zoom reset + quest/POI pass unless actually zoomed in, and wheel notches at the zoom limits cost nothing.
+  - Lower per-frame cost while the map is open: class colors are cached per unit token (wiped on roster changes) with texture dirty-checks, Mapster lookups are cached, coordinates update at 10 Hz instead of every frame, and quest-blob redraws while panning are throttled to ~16 Hz with a final redraw on mouse-up.
+- Auto-repair no longer claims it repaired when you can't afford it — it says what the repair would have cost instead.
+- Fast auto-loot now picks up leftover bind-on-pickup items itself (world-quest items from objects, BoP drops): Ascension's engine auto-loot stops at anything needing a bind confirmation and left them sitting in the (hidden) window. With auto-confirm-BoP on, the leftovers are looted via the existing auto-confirm; with it off, or if items remain for other reasons (bags full, unique), the window reappears as before.
+- Fast auto-loot now respects the game's own Auto Loot setting: turning Auto Loot off in Interface options (or via `/console`) turns fast loot off with it, and the change survives /reload — previously the addon force-wrote the CVar on every login and stomped the game setting back on. Toggling fast loot in `/rfc` still drives the CVar both ways; enabling Auto Loot in game options does NOT force fast loot on (plain auto-loot with a visible window is a legitimate combo).
+
 ## [1.5.2]
 - **New: "Leave party on dungeon exit"** (`leavePartyOnDungeon`, off by default, Tweaks page) — clicking the Leave Dungeon button at the end of an instance also leaves your party, instead of just teleporting you out while the group stays formed.
 - **Performance pass across the addon** — several hot paths that ran on every event fired needlessly on nearly every one:

@@ -492,6 +492,15 @@ local function BuildGeneralPage()
             db.minimap.hide = not v
             if RefactorUI.UpdateMinimapButton then RefactorUI.UpdateMinimapButton() end
         end))
+    y = y - 30
+
+    y = Section(p, "Updates", 0, y - 8, CONTENT_W)
+    p:Track(MakeCheck(p, 0, y, CONTENT_W, "New version notice",
+        "Prints a chat line when a guild or group member runs a newer " ..
+        "Refactor than yours. Versions travel on hidden addon messages — " ..
+        "nothing is ever shown to other players.",
+        function() return RefactorQoL and RefactorQoL.Get("versionCheck") end,
+        function(v) if RefactorQoL then RefactorQoL.Set("versionCheck", v) end end))
 end
 
 --------------------------------------------------------------------------
@@ -1026,6 +1035,29 @@ end
 -- Page: Tweaks (the QoL features from Refactor.lua)
 --------------------------------------------------------------------------
 
+-- Both destructive (overwrite every individual QoL choice), so they stay popups.
+StaticPopupDialogs["REFACTORUI_RESET_QOL"] = {
+    text = "Restore all QoL tweaks to their defaults?",
+    button1 = YES,
+    button2 = NO,
+    OnAccept = function()
+        if RefactorQoL then RefactorQoL.ResetDefaults() end
+        RefactorUI.Refresh()
+    end,
+    timeout = 0, whileDead = 1, hideOnEscape = 1,
+}
+
+StaticPopupDialogs["REFACTORUI_DISABLE_ALL_QOL"] = {
+    text = "Turn off every QoL tweak? You can then opt back into the ones you want, one at a time.",
+    button1 = YES,
+    button2 = NO,
+    OnAccept = function()
+        if RefactorQoL then RefactorQoL.DisableAll() end
+        RefactorUI.Refresh()
+    end,
+    timeout = 0, whileDead = 1, hideOnEscape = 1,
+}
+
 local function BuildTweaksPage()
     local p = NewPage("tweaks")
     p.blurb = "Quality-of-life switches: looting, questing, the world map, " ..
@@ -1062,9 +1094,30 @@ local function BuildTweaksPage()
             nil, isEnabled))
     end
 
-    local y = Section(child, "Looting", 0, 0, INNER_W)
+    local disableAllBtn = MakeButton(child, 130, 22, "Disable all", function()
+        StaticPopup_Show("REFACTORUI_DISABLE_ALL_QOL")
+    end)
+    disableAllBtn:SetPoint("TOPLEFT", 0, 0)
+    p:Track(disableAllBtn)
+    Explain(disableAllBtn, "Disable all",
+        "Turns off every tweak on this page in one click, so you can opt " ..
+        "back into just the ones you want — like starting from Pawn's " ..
+        "clean slate instead of hunting each one down. Gear compare, loot " ..
+        "toasts and the CC alert live on their own pages and aren't affected.")
+
+    local resetBtn = MakeButton(child, 130, 22, "Restore defaults", function()
+        StaticPopup_Show("REFACTORUI_RESET_QOL")
+    end)
+    resetBtn:SetPoint("TOPLEFT", 140, 0)
+    p:Track(resetBtn)
+    Explain(resetBtn, "Restore defaults",
+        "Resets every tweak on this page back to what it shipped with. " ..
+        "Map window position/scale, minimap button, and the CC alert " ..
+        "position are untouched.")
+
+    local y = Section(child, "Looting", 0, -32, INNER_W)
     QolCheck(0, y, "Fast auto-loot",
-        "Loots instantly, window hidden. Hold Shift for the normal window.",
+        "Loots instantly, window hidden. Hold Shift for the normal window. Tied to the game's Auto Loot setting: turning that off turns this off too.",
         "fastLoot")
     y = y - 28
     QolCheck(0, y, "Auto-confirm bind-on-pickup",
@@ -1084,6 +1137,16 @@ local function BuildTweaksPage()
         "transmogSkipConfirm")
     y = y - 36
 
+    y = Section(child, "Merchants", 0, y - 8, INNER_W)
+    QolCheck(0, y, "Auto-sell trash",
+        "Sells every poor-quality (gray) bag item when you open a merchant. Hold Shift while opening to keep them.",
+        "autoSellTrash")
+    y = y - 28
+    QolCheck(0, y, "Auto-repair",
+        "Repairs all gear when you open a repair merchant, using your own money (never the guild bank). Hold Shift while opening to skip.",
+        "autoRepair")
+    y = y - 36
+
     y = Section(child, "Questing", 0, y - 8, INNER_W)
     QolCheck(0, y, "Auto-accept quests",
         "Accepts quest offers and escort confirmations. Hold Shift for the normal window.",
@@ -1099,8 +1162,12 @@ local function BuildTweaksPage()
     y = y - 36
 
     y = Section(child, "World map", 0, y - 8, INNER_W)
+    local fmOwner = RefactorFullMapShared and RefactorFullMapShared.Conflict
+        and RefactorFullMapShared.Conflict() or nil
     QolCheck(0, y, "Full-size map as a movable window",
-        "The full map becomes the only mode: a scaled-down window with no black backdrop, and keyboard movement keeps working. Drag its title strip to move it; mousewheel there resizes.",
+        "The full map becomes the only mode: a scaled-down window with no black backdrop, and keyboard movement keeps working. Drag its title strip to move it; mousewheel there resizes."
+        .. (fmOwner and (" |cffff7f3fCurrently handled by " .. fmOwner
+            .. " — this setting has no effect while that addon is enabled.|r") or ""),
         "fullMapWindow")
     y = y - 28
     do
@@ -1127,6 +1194,30 @@ local function BuildTweaksPage()
         p:Track(slider)
         if not fm then slider:Disable() end
     end
+    y = y - 36
+    -- Leatrix Maps ships the same zoom/class-icon port; RefactorMap stands
+    -- down while it's loaded (stacked hooks made quest markers drift on
+    -- zoom), so these two flags change nothing until Leatrix is disabled.
+    local leatrixNote = IsAddOnLoaded("Leatrix_Maps")
+        and " |cffff7f3fCurrently handled by Leatrix Maps — this setting has no effect while Leatrix Maps is enabled.|r"
+        or ""
+    QolCheck(0, y, "Scroll to zoom, drag to pan the map",
+        "Mousewheel over the map content zooms in/out; click and drag while zoomed in to pan. Ported from Magnify-WotLK."
+        .. leatrixNote,
+        "mapZoom", nil, true)
+    y = y - 28
+    QolCheck(0, y, "Class-colored party/raid icons",
+        "Party and raid members show as their class color instead of the default white dot."
+        .. leatrixNote,
+        "mapClassIcons")
+    y = y - 28
+    QolCheck(0, y, "Show map coordinates",
+        "Player and cursor coordinates in the bottom corners of the map.",
+        "mapCoords")
+    y = y - 28
+    QolCheck(0, y, "Fade map while moving",
+        "Dims the map window while your character is moving. Mouse over the map to see it fully again.",
+        "mapMoveFade")
     y = y - 36
 
     y = Section(child, "Social", 0, y - 8, INNER_W)

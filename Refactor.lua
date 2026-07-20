@@ -34,10 +34,14 @@ local QOL_DEFAULTS = {
     qualityBorder = true,  -- color tooltip border by item quality
     autoConfirmBoP = true, -- skip "will bind it to you" popups
     fastLoot = true,       -- instant loot, hidden loot window
-    questAccept = true,    -- auto-accept quest offers and escort confirmations
-    questTurnIn = true,    -- auto-complete quests (multi-choice rewards stay open)
-    questGossip = true,    -- auto-pick quest entries from NPC gossip menus
-    fullMapWindow = true,  -- fullscreen map as a movable window (no blackout)
+    questAccept = false,   -- auto-accept quest offers and escort confirmations
+    questTurnIn = false,   -- auto-complete quests (multi-choice rewards stay open)
+    questGossip = false,   -- auto-pick quest entries from NPC gossip menus
+    fullMapWindow = false, -- fullscreen map as a movable window (no blackout)
+    mapZoom = true,        -- scroll to zoom/pan the world map (RefactorMap.lua)
+    mapClassIcons = true,  -- class-colored party/raid icons on the world map
+    mapCoords = false,     -- player + cursor coordinates on the world map
+    mapMoveFade = false,   -- fade the map window while the character moves
     hideErrorText = true,  -- hide red UI error text ("Ability is not ready yet")
     muteErrorSpeech = true,-- silence "I can't do that yet" voice errors
     -- Companion to the silent-sound client patch (loose files under the
@@ -60,13 +64,61 @@ local QOL_DEFAULTS = {
     -- Moves items and equips a bag on your behalf when your bag slots are
     -- full; on by default per user request.
     seamlessBagUpgrade = true, -- right-click a bag: auto-swap in the smallest equipped bag
+    -- Merchant automations ship off: auto-sell is irreversible for the
+    -- duration of the buyback window and auto-repair spends gold, so both
+    -- are explicit opt-ins. Holding Shift while opening the merchant skips
+    -- them (the same "Shift = manual" convention as loot and quests).
+    -- Auto-repair uses YOUR money only, never the guild bank's.
+    autoRepair = false,    -- repair all gear when opening a repair merchant
+    autoSellTrash = false, -- sell all poor-quality (gray) items on merchant open
+    versionCheck = true,   -- chat notice when a guild/groupmate runs a newer version
 }
 
 local function ApplyFastLootCVar()
     -- Written both ways: only ever setting "1" left the engine
     -- auto-looting (shift-inverted) after the flag was unticked.
-    SetCVar("autoLootDefault", Qol("fastLoot") and "1" or "0")
+    local v = Qol("fastLoot") and "1" or "0"
+    -- Recorded BEFORE the write: SetCVar fires CVAR_UPDATE synchronously,
+    -- and the reconciler below must not treat our own write as external.
+    if qdb then qdb.fastLootCVar = v end
+    SetCVar("autoLootDefault", v)
 end
+
+-- The game's own Auto Loot option shares the autoLootDefault CVar, and
+-- turning it off there must stick: fast loot can't work without engine
+-- auto-loot, and previously the next /reload stomped the game setting
+-- back on. The addon records every value it writes (qdb.fastLootCVar);
+-- any mismatch on login or CVAR_UPDATE means the change came from outside
+-- (Interface options, /console, another addon), so external OFF wins:
+-- fast loot turns off with it. Never the reverse — enabling Auto Loot in
+-- the game options doesn't force fast loot on (plain auto-loot with a
+-- visible window is a legitimate combo); that's the /rfc checkbox's job.
+local function ReconcileFastLootCVar()
+    if not qdb then return end
+    local current = GetCVar("autoLootDefault")
+    if qdb.fastLootCVar == nil then
+        -- First run since this tracking existed: adopt the flag (fresh
+        -- installs and everyone upgrading), preserving the out-of-the-box
+        -- behavior. Caveat: if Auto Loot was disabled in the game settings
+        -- right before updating, it's stomped this one last time — after
+        -- this, external changes stick.
+        ApplyFastLootCVar()
+        return
+    end
+    if current == qdb.fastLootCVar then return end
+    qdb.fastLootCVar = current
+    if current == "0" and qdb.fastLoot then
+        qdb.fastLoot = false
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor:|r fast auto-loot" ..
+            " turned off along with the game's Auto Loot setting." ..
+            " Re-enable it in /rfc -> Tweaks.")
+        if RefactorUI and RefactorUI.Refresh then RefactorUI.Refresh() end
+    end
+end
+
+local fastLootCVarWatcher = CreateFrame("Frame")
+fastLootCVarWatcher:RegisterEvent("CVAR_UPDATE")
+fastLootCVarWatcher:SetScript("OnEvent", ReconcileFastLootCVar)
 
 local function InitQol()
     if qdb or type(RefactorCompareDB) ~= "table" then return end
@@ -90,7 +142,7 @@ local function InitQol()
                 " tradeable items).")
         end
     end
-    ApplyFastLootCVar()
+    ReconcileFastLootCVar()
 end
 
 function Qol(key) -- assigns the forward-declared local above
@@ -119,6 +171,29 @@ RefactorQoL = {
         if key == "muteErrorSpeech" then ApplyErrorSpeech() end
         if key == "fullMapWindow" and ApplyFullMapWindow then ApplyFullMapWindow() end
         if key == "fastLoot" then ApplyFastLootCVar() end
+    end,
+    -- Restores every QoL flag to its shipped default. Position/scale saves
+    -- (map window, minimap button, CC alert) live outside qol and are
+    -- untouched.
+    ResetDefaults = function()
+        InitQol()
+        if not qdb then return end
+        for k in pairs(qdb) do qdb[k] = nil end
+        for k, v in pairs(QOL_DEFAULTS) do qdb[k] = v end
+        ApplyErrorSpeech()
+        ApplyFastLootCVar()
+        if ApplyFullMapWindow then ApplyFullMapWindow() end
+    end,
+    -- Flips every QoL flag off in one click, so the player can then opt
+    -- back into individual tweaks one at a time (the Pawn-style workflow
+    -- this button exists for) instead of hunting down each one to disable.
+    DisableAll = function()
+        InitQol()
+        if not qdb then return end
+        for k in pairs(QOL_DEFAULTS) do qdb[k] = false end
+        ApplyErrorSpeech()
+        ApplyFastLootCVar()
+        if ApplyFullMapWindow then ApplyFullMapWindow() end
     end,
 }
 
@@ -270,6 +345,82 @@ f:SetScript("OnEvent", function(self, event)
 end)
 
 --------------------------------------------------------------------------
+-- Merchant automation: auto-repair and auto-sell trash, both off by
+-- default. Everything runs on MERCHANT_SHOW; Shift held at that moment
+-- skips both, matching the loot/quest "Shift = manual" convention.
+--------------------------------------------------------------------------
+
+local function MoneyString(copper)
+    -- GetCoinTextureString exists in this era's FrameXML; guard anyway.
+    if GetCoinTextureString then return GetCoinTextureString(copper) end
+    local g = math.floor(copper / 10000)
+    local s = math.floor((copper % 10000) / 100)
+    local c = copper % 100
+    if g > 0 then return string.format("%dg %ds %dc", g, s, c) end
+    if s > 0 then return string.format("%ds %dc", s, c) end
+    return string.format("%dc", c)
+end
+
+local function AutoRepair()
+    if not CanMerchantRepair or not CanMerchantRepair() then return end
+    local cost = GetRepairAllCost()
+    if not cost or cost <= 0 then return end
+    -- RepairAllItems fails silently when the player can't afford it;
+    -- without this check the summary line claimed a repair that never
+    -- happened.
+    if GetMoney() < cost then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor:|r not enough money to" ..
+            " repair all gear (" .. MoneyString(cost) .. " needed).")
+        return
+    end
+    RepairAllItems() -- no argument: the player's own funds, never the guild bank
+    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor:|r repaired all gear for " ..
+        MoneyString(cost) .. ".")
+end
+
+local function AutoSellTrash()
+    local total, count = 0, 0
+    for b = 0, 4 do
+        for s = 1, GetContainerNumSlots(b) do
+            local link = GetContainerItemLink(b, s)
+            if link then
+                -- GetItemInfo reads base-item data, but vendor price isn't
+                -- shown by this addon anywhere (Ascension scales it), so a
+                -- slightly-off running total is acceptable — the merchant
+                -- pays what it pays; this is only a summary line.
+                local _, _, quality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(link)
+                if quality == 0 then
+                    local _, itemCount = GetContainerItemInfo(b, s)
+                    if sellPrice and sellPrice > 0 then
+                        total = total + sellPrice * (itemCount or 1)
+                        count = count + (itemCount or 1)
+                    end
+                    -- While the merchant window is open, UseContainerItem
+                    -- sells instead of uses. Unsellable grays (quest items)
+                    -- simply don't move — no harm done.
+                    UseContainerItem(b, s)
+                end
+            end
+        end
+    end
+    if count > 0 then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor:|r sold " .. count ..
+            " trash item" .. (count == 1 and "" or "s") .. " for " ..
+            MoneyString(total) .. ".")
+    end
+end
+
+local merchantFrame = CreateFrame("Frame")
+merchantFrame:RegisterEvent("MERCHANT_SHOW")
+merchantFrame:SetScript("OnEvent", function()
+    -- Read at use time so toggling mid-session takes effect immediately,
+    -- and neither flag needs the window reopened.
+    if IsShiftKeyDown() then return end
+    if Qol("autoRepair") then AutoRepair() end
+    if Qol("autoSellTrash") then AutoSellTrash() end
+end)
+
+--------------------------------------------------------------------------
 -- Tooltip: anchor beside the cursor (right side) and follow it while shown
 --------------------------------------------------------------------------
 
@@ -407,35 +558,55 @@ local function SetLootWindowVisible(visible)
     end
 end
 
--- Attached only between LOOT_OPENED and its one check (or LOOT_CLOSED);
+-- Attached only between LOOT_OPENED and its checks (or LOOT_CLOSED);
 -- detaches itself so an idle frame costs nothing per frame. The engine's
--- autoLootDefault CVar does the actual looting — this only reveals the
--- window again if anything is left over (bags full, unique item).
+-- autoLootDefault CVar does the actual looting — but on Ascension it
+-- stops at anything needing a bind confirmation (BoP world-quest items
+-- from objects stay in the window). With autoConfirmBoP on, the first
+-- check loots those leftovers itself (the LOOT_BIND_CONFIRM handler above
+-- accepts the popup), and only if a second check still finds loot left
+-- (bags full, unique item) is the window revealed for manual looting.
+local fastLootRetry -- set after the one LootSlot pass on leftovers
 local function FastLootCheck(self, elapsed)
     timeSinceLootPass = timeSinceLootPass + elapsed
     if timeSinceLootPass < FASTLOOT_CHECK_DELAY then return end
-    self:SetScript("OnUpdate", nil)
+    timeSinceLootPass = 0
     local remaining = 0
     for i = 1, GetNumLootItems() do
         if GetLootSlotInfo(i) then
             remaining = remaining + 1
         end
     end
-    if remaining > 0 then
-        -- Loot remains, show the window so the player can loot manually
-        SetLootWindowVisible(true)
+    if remaining == 0 then
+        self:SetScript("OnUpdate", nil)
+        return
     end
+    if not fastLootRetry and Qol("autoConfirmBoP") then
+        fastLootRetry = true
+        for i = 1, GetNumLootItems() do
+            if GetLootSlotInfo(i) then LootSlot(i) end
+        end
+        return -- OnUpdate stays attached for the confirm round trip
+    end
+    self:SetScript("OnUpdate", nil)
+    -- Loot remains, show the window so the player can loot manually
+    SetLootWindowVisible(true)
 end
 
 fastLoot:SetScript("OnEvent", function(self, event)
     if event == "LOOT_OPENED" then
-        if IsShiftKeyDown() or not Qol("fastLoot") then
+        -- The CVar check is a safety net: if engine auto-loot is off by
+        -- any path the reconciler didn't see, never hide the window — the
+        -- items wouldn't be looted and the player would stare at nothing.
+        if IsShiftKeyDown() or not Qol("fastLoot")
+            or not GetCVarBool("autoLootDefault") then
             self:SetScript("OnUpdate", nil)
             SetLootWindowVisible(true)
             return
         end
         SetLootWindowVisible(false)
         timeSinceLootPass = 0
+        fastLootRetry = nil
         self:SetScript("OnUpdate", FastLootCheck)
     elseif event == "LOOT_CLOSED" then
         self:SetScript("OnUpdate", nil)
@@ -779,7 +950,9 @@ do
         and WORLDMAP_SETTINGS and WORLDMAP_WINDOWED_SIZE then
 
         local FULLMAP_W, FULLMAP_H = 1024, 768 -- WorldMapPositioningGuide box
-        local MIN_SCALE, MAX_SCALE = 0.5, 1.0
+        -- Symmetric around DEFAULT_SCALE (0.85) so the "1.00" mark sits at
+        -- the exact center of the slider track: 0.85 - 0.5 == 1.2 - 0.85.
+        local MIN_SCALE, MAX_SCALE = 0.5, 1.2
         local DEFAULT_SCALE = 0.85 -- most players land here; UI shows this as "1.0"
 
         -- Position/scale live outside qol (RefactorQoL.Set coerces values
@@ -793,8 +966,32 @@ do
             return RefactorCompareDB.fullmap
         end
 
+        -- Map-owning addons (issue #10): Leatrix Maps and Mapster force the
+        -- windowed map (miniWorldMap CVar, panel management disabled) and
+        -- remodel the frame tree around it; ElvUI's smaller world map
+        -- reparents the frame and noops WorldMapFrame.SetParent outright.
+        -- This tweak used to fight back (clear the CVar + ToggleSizeUp on
+        -- every OnShow), which broke their layouts and ran a full mode
+        -- switch mid-OnShow on a remodeled protected frame tree. If any of
+        -- them owns the map, stand down completely — checked at use time,
+        -- since ElvUI's config tables only exist after its own init.
+        local function MapOwnedElsewhere()
+            if IsAddOnLoaded("Leatrix_Maps") then return "Leatrix Maps" end
+            if IsAddOnLoaded("Mapster") then return "Mapster" end
+            if IsAddOnLoaded("ElvUI") and type(ElvUI) == "table" then
+                local E = ElvUI[1]
+                local wm = E and E.private and E.private.worldmap
+                local gen = E and E.global and E.global.general
+                if wm and wm.enable and gen and gen.smallerWorldMap then
+                    return "ElvUI (smaller world map)"
+                end
+            end
+            return nil
+        end
+
         local function Windowized()
             return Qol("fullMapWindow")
+                and not MapOwnedElsewhere()
                 and WORLDMAP_SETTINGS.size ~= WORLDMAP_WINDOWED_SIZE
         end
 
@@ -821,14 +1018,36 @@ do
             end
         end
 
+        -- The quest blob VISUAL is engine-drawn at screen coordinates
+        -- captured by DrawQuestBlob — moving or rescaling the window leaves
+        -- it painted at the old spot until the next draw. Undraw before a
+        -- drag, redraw after. Skipped in combat: RefactorMap's blob
+        -- protection has the frame parked offscreen then, and redraws it on
+        -- leaving combat.
+        local function DrawSelectedBlob(show)
+            local sel = WORLDMAP_SETTINGS and WORLDMAP_SETTINGS.selectedQuest
+            if not (sel and WorldMapBlobFrame and WorldMapBlobFrame.DrawQuestBlob)
+                or InCombatLockdown() then
+                return
+            end
+            local id = WORLDMAP_SETTINGS.selectedQuestId or sel.questId
+            if not id then return end
+            WorldMapBlobFrame:DrawQuestBlob(id, false)
+            if show and not sel.completed then
+                WorldMapBlobFrame:DrawQuestBlob(id, true)
+            end
+        end
+
         -- Quest blob mouseover hit-testing caches screen translations;
         -- invalidate after any move or rescale (stock does the same on its
-        -- own drags and mode switches).
+        -- own drags and mode switches), then repaint the blob itself at the
+        -- window's new position.
         local function RefreshBlob()
             if WorldMapBlobFrame then WorldMapBlobFrame.xRatio = nil end
             if type(WorldMapBlobFrame_CalculateHitTranslations) == "function"
                 and WorldMapFrame:IsShown() then
                 WorldMapBlobFrame_CalculateHitTranslations()
+                DrawSelectedBlob(true)
             end
         end
 
@@ -864,7 +1083,17 @@ do
         drag:EnableMouseWheel(true)
         drag:Hide()
 
+        -- Ascension protects the entire WorldMapFrame tree: any addon touch
+        -- (SetParent/SetPoint/SetScale/...) during combat is blocked and
+        -- blamed on this addon. Skip in combat, redo when combat ends.
+        local combatWatcher = CreateFrame("Frame")
+
         local function Apply()
+            if MapOwnedElsewhere() then return end
+            if InCombatLockdown() then
+                combatWatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
+                return
+            end
             if Windowized() then
                 local db = FMDB()
                 local s = db and db.scale or DEFAULT_SCALE
@@ -925,8 +1154,14 @@ do
         end
         ApplyFullMapWindow = Apply
 
+        combatWatcher:SetScript("OnEvent", function(self)
+            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+            Apply()
+        end)
+
         drag:SetScript("OnMouseDown", function(self, button)
             if button ~= "LeftButton" or not Windowized() then return end
+            DrawSelectedBlob(false) -- don't let the blob trail behind the drag
             WorldMapFrame:StartMoving()
         end)
         drag:SetScript("OnMouseUp", function(self, button)
@@ -975,6 +1210,9 @@ do
             -- everything there is actual-scale / BASE_SCALE, so the default
             -- reads as a clean 1.0 instead of the raw 0.85.
             BASE_SCALE = DEFAULT_SCALE,
+            -- Non-nil = another addon owns the world map and this tweak is
+            -- standing down; returns that addon's display name.
+            Conflict = MapOwnedElsewhere,
         }
 
         -- ToggleSizeUp rebuilds the fullscreen shell (and re-shows the
@@ -995,7 +1233,38 @@ do
         loader:RegisterEvent("PLAYER_ENTERING_WORLD")
         loader:SetScript("OnEvent", function(self)
             self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+            local owner = MapOwnedElsewhere()
+            if owner and Qol("fullMapWindow") then
+                DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor:|r "
+                    .. owner .. " is managing the world map, so the"
+                    .. " movable-map tweak is standing down (it changes"
+                    .. " nothing while that addon is enabled).")
+            end
             Apply()
+            -- Old versions persisted miniWorldMap=0 while forcing the map
+            -- fullscreen even against map-owning addons. That session then
+            -- starts fullscreen although the owner runs the map windowed —
+            -- and Leatrix's zoom rubberbands there: every quest update
+            -- bounces the fullscreen map through the quest-list relayout,
+            -- whose SetupWorldMapFrame hook resets the zoom. Once the
+            -- owner's own login handler has restored the CVar (hence the
+            -- delay), hand the mode back too. Uses the stock toggle from
+            -- the same place stock calls it (login, map closed).
+            if owner then
+                local t = 0
+                self:SetScript("OnUpdate", function(self, elapsed)
+                    t = t + elapsed
+                    if t < 1 then return end
+                    self:SetScript("OnUpdate", nil)
+                    if not InCombatLockdown()
+                        and GetCVarBool("miniWorldMap")
+                        and WORLDMAP_SETTINGS.size ~= WORLDMAP_WINDOWED_SIZE
+                        and not WorldMapFrame:IsShown()
+                        and type(WorldMap_ToggleSizeDown) == "function" then
+                        WorldMap_ToggleSizeDown()
+                    end
+                end)
+            end
         end)
     end
 end
@@ -1253,6 +1522,113 @@ do
     -- this hook's shuffle-and-retry takes over, instead of being preempted.
     hooksecurefunc("UseContainerItem", function(bag, slot)
         TryBagUpgrade(bag, slot)
+    end)
+end
+
+--------------------------------------------------------------------------
+-- Version check: peer-to-peer over hidden addon messages. No HTTP exists
+-- in this client, so the only way to hear about a newer release is from
+-- another player already running it: everyone broadcasts their version to
+-- guild and group channels, and receiving a higher one prints a one-line
+-- chat notice. Broadcasting is unconditional (it's invisible, and it's
+-- what lets OTHERS learn there's an update); the versionCheck flag only
+-- gates the notice on this end.
+--------------------------------------------------------------------------
+
+do
+    local VER_PREFIX = "RefactorVer"
+    local myVersion = GetAddOnMetadata("Refactor", "Version") or "0"
+    local UPDATE_URL = "github.com/ProfetGit/Refactor-Ascension"
+
+    -- True when a is strictly newer than b. Compares dotted numeric
+    -- segments piecewise ("1.10.0" > "1.9.2"); a missing segment counts
+    -- as 0, so "1.5" == "1.5.0".
+    local function VersionNewer(a, b)
+        local ai, bi = a:gmatch("%d+"), b:gmatch("%d+")
+        while true do
+            local as, bs = ai(), bi()
+            if not as and not bs then return false end
+            local an, bn = tonumber(as) or 0, tonumber(bs) or 0
+            if an ~= bn then return an > bn end
+        end
+    end
+
+    -- One broadcast per channel per 30s: PARTY_MEMBERS_CHANGED and
+    -- RAID_ROSTER_UPDATE fire in bursts (and once per member on a full
+    -- raid join), and each guild/group mate only needs to hear a version
+    -- once for the session anyway.
+    local SEND_COOLDOWN = 30
+    local lastSent = {}
+    local function Broadcast(channel)
+        local now = GetTime()
+        if lastSent[channel] and now - lastSent[channel] < SEND_COOLDOWN then return end
+        lastSent[channel] = now
+        SendAddonMessage(VER_PREFIX, myVersion, channel)
+    end
+
+    local function BroadcastAll()
+        if IsInGuild() then Broadcast("GUILD") end
+        -- Inside a battleground the RAID channel is redirected anyway;
+        -- send on the explicit channel so it works regardless.
+        if UnitInBattleground("player") then
+            Broadcast("BATTLEGROUND")
+        elseif GetNumRaidMembers() > 0 then
+            Broadcast("RAID")
+        elseif GetNumPartyMembers() > 0 then
+            Broadcast("PARTY")
+        end
+    end
+
+    local announced -- newest remote version already reported this session
+
+    local ver = CreateFrame("Frame")
+    ver:RegisterEvent("PLAYER_ENTERING_WORLD")
+    ver:RegisterEvent("PARTY_MEMBERS_CHANGED")
+    ver:RegisterEvent("RAID_ROSTER_UPDATE")
+    ver:RegisterEvent("CHAT_MSG_ADDON")
+
+    -- Guild membership isn't known the instant PLAYER_ENTERING_WORLD
+    -- fires (IsInGuild() can still be false), so the login broadcast waits
+    -- a few seconds. OnUpdate ticker per this file's usual pattern —
+    -- C_Timer isn't guaranteed on this client; detaches itself after
+    -- firing so idle frames cost nothing.
+    local LOGIN_DELAY = 8
+    local loginWait = 0
+    local function LoginTick(self, elapsed)
+        loginWait = loginWait - elapsed
+        if loginWait <= 0 then
+            self:SetScript("OnUpdate", nil)
+            BroadcastAll()
+        end
+    end
+
+    ver:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
+        if event == "PLAYER_ENTERING_WORLD" then
+            loginWait = LOGIN_DELAY
+            self:SetScript("OnUpdate", LoginTick)
+        elseif event == "PARTY_MEMBERS_CHANGED" or event == "RAID_ROSTER_UPDATE" then
+            -- New group members broadcast at their own login only, which a
+            -- later-formed group never heard — re-send on roster changes
+            -- (the 30s cooldown eats the burst).
+            BroadcastAll()
+        elseif event == "CHAT_MSG_ADDON" then
+            local prefix, message, _, sender = arg1, arg2, arg3, arg4
+            if prefix ~= VER_PREFIX then return end
+            if sender == UnitName("player") then return end -- own echo
+            -- Take only a version-shaped token: the message is peer input,
+            -- not trusted data.
+            local remote = message and message:match("%d+[%.%d]*")
+            if not remote then return end
+            if not Qol("versionCheck") then return end
+            if not VersionNewer(remote, myVersion) then return end
+            -- Once per version per session: announce again only if an even
+            -- newer one shows up.
+            if announced and not VersionNewer(remote, announced) then return end
+            announced = remote
+            Announce("a newer version |cffffcc00v" .. remote ..
+                "|r is available (you have v" .. myVersion ..
+                "). Get it at |cffffcc00" .. UPDATE_URL .. "|r")
+        end
     end)
 end
 

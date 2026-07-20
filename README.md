@@ -37,13 +37,16 @@ All individually toggleable:
 - Auto-collects transmog appearances from your bags
 - Tooltip follows your cursor, with a border colored by item quality
 - Auto-confirms Bind-on-Pickup loot prompts
-- Quest automation — auto-accept, auto turn-in, gossip/greeting quest picking (hold **Shift** to fall back to manual for any step)
+- Quest automation — auto-accept, auto turn-in, gossip/greeting quest picking (off by default; hold **Shift** to fall back to manual for any step)
 - Hides red UI error text and mutes the "I can't do that yet" error voice line
 - Mutes the cast-deny **fizzle sound** (the noise when you spam an ability on cooldown or try to cast without enough resource) — needs the bundled one-click client patch, see [Installation](#installation)
 - Auto-declines group invites, duels, guild invites, and trades from strangers (all off by default; hold **Shift** to handle one manually) — each decline prints a chat line so you know it happened
 - Auto-accepts player resurrections in battlegrounds (off by default)
 - Quick invite: Alt + Right-Click a player's unit frame, chat name, or model in the world to invite them to your party (off by default)
-- Fullscreen map as a movable, resizable window instead of a fullscreen blackout
+- Fullscreen map as a movable, resizable window instead of a fullscreen blackout (off by default)
+- World map scroll-to-zoom and click-drag pan, with class-colored party/raid dots (ported from Magnify-WotLK); optional map coordinates and fade-while-moving (both off by default)
+- Auto-sell gray items and auto-repair (own money only) at merchants (both off by default; hold **Shift** to skip)
+- New-version notice when a guild or group member runs a newer Refactor
 - Seamless bag upgrade: right-click a full bag to auto-swap in your smallest equipped bag
 - Leave party when clicking Leave Dungeon at the end of an instance (off by default)
 
