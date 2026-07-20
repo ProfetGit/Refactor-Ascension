@@ -2,6 +2,9 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.4]
+- Fixed world map party/raid dots showing white for everyone: class-color lookup failures (`UnitClass` returns nil until the server sends a member's class) were cached until the next roster change, and a dirty-check early-return could leave the uncolored white icon texture visible instead of the stock dot. Failures are now retried every frame until they succeed, and the fallback to the stock dot is applied correctly. Ascension's extended `RAID_CLASS_COLORS` is used for the CoA class colors, with `CUSTOM_CLASS_COLORS` as a fallback.
+
 ## [1.5.3]
 - **New: world map zoom, pan and class icons** (`RefactorMap.lua`, ported from Magnify-WotLK) — scroll over the map to zoom in/out, click-drag to pan while zoomed (`mapZoom`, on by default), party/raid members shown as class-colored dots (`mapClassIcons`, on by default), optional player/cursor coordinates (`mapCoords`, off by default) and fade-map-while-moving (`mapMoveFade`, off by default). Stands down when Leatrix Maps is loaded (it ships the same port, and stacked hooks drift quest markers); Mapster and ElvUI map layouts are accommodated.
 - **New: merchant automation** — auto-sell all poor-quality (gray) items (`autoSellTrash`) and auto-repair using your own money, never the guild bank (`autoRepair`), both off by default on the Tweaks page, both skipped while Shift is held, each printing a chat summary only when it actually did something.

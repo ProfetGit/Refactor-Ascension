@@ -20,10 +20,10 @@
 --
 -- Performance shape: the replaced WorldMapButton OnUpdate is stock-parity
 -- per frame while the map is open; on top of that, class colors are
--- cached per unit token (wiped on roster events) with texture dirty-
--- checks, the Mapster lookup is cached, map coordinates throttle to
--- 10 Hz, and quest-blob redraws during pan throttle to ~16 Hz with a
--- final redraw on mouse-up. Combat: the map tree is protected on
+-- cached per unit token (successes only, wiped on roster events) with
+-- texture dirty-checks, the Mapster lookup is cached, map coordinates
+-- throttle to 10 Hz, and quest-blob redraws during pan throttle to
+-- ~16 Hz with a final redraw on mouse-up. Combat: the map tree is protected on
 -- Ascension, so zoom rescales return early in combat and blob/layout
 -- work is deferred to PLAYER_REGEN_ENABLED (see the combat section).
 --
@@ -593,12 +593,23 @@ do
         memberFrame.colorIcon = memberFrame:CreateTexture(nil, "ARTWORK")
         memberFrame.colorIcon:SetAllPoints(memberFrame)
         memberFrame.colorIcon:SetTexture("Interface\\AddOns\\Refactor\\textures\\WorldMapPlayer")
-        memberFrame.icon:Hide()
+        memberFrame.colorIcon:Hide()
+        -- Start in the "no color" state: a fresh texture is visible and
+        -- uncolored (= white), and the dirty-check below early-returns
+        -- when nothing changed — without this marker that white texture
+        -- stayed on screen instead of the stock dot.
+        memberFrame.shownColor = false
     end
 
     -- This runs per shown group member per frame while the map is open, so
     -- cache the class color per unit token (wiped on roster changes) and
     -- only touch the textures when the shown state actually changes.
+    -- FAILURES ARE NOT CACHED: UnitClass returns nil until the server has
+    -- sent the member's class (right after login/join), and caching that
+    -- pinned every dot white until the next roster change. Ascension's
+    -- client extends RAID_CLASS_COLORS with the CoA class tokens (the same
+    -- table Details colors its bars from); CUSTOM_CLASS_COLORS is checked
+    -- as a fallback for clients/addons that provide it instead.
     local classColorCache = {}
     local rosterWatcher = CreateFrame("Frame")
     rosterWatcher:RegisterEvent("PARTY_MEMBERS_CHANGED")
@@ -608,8 +619,13 @@ do
     local function ColorWorldMapPartyMemberFrame(memberFrame, unit)
         local classColor = unit and classColorCache[unit]
         if classColor == nil and unit then
-            classColor = RAID_CLASS_COLORS[select(2, UnitClass(unit))] or false
-            classColorCache[unit] = classColor
+            local token = select(2, UnitClass(unit))
+            local color = token and (RAID_CLASS_COLORS[token]
+                or (_G.CUSTOM_CLASS_COLORS and _G.CUSTOM_CLASS_COLORS[token]))
+            if color then
+                classColorCache[unit] = color
+                classColor = color
+            end
         end
         local wantColor = (classColor and Qol("mapClassIcons")) and classColor or nil
         if memberFrame.shownColor == wantColor then return end
