@@ -3,6 +3,7 @@
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+- **New: "Show unexplored areas"** (`RefactorFog.lua`, `mapRevealFog`, off by default, Tweaks page) — clears the fog of war from every zone map, rendering the sub-zone overlays you haven't discovered yet (Kalimdor, Eastern Kingdoms, Outland, and Northrend). Technique and per-sub-zone errata data ported (MIT) from Leatrix Maps' FogClear module, itself adapted from Mapster FogClear by Nevcairiel. Zones without errata data (e.g. Ascension's custom zones) keep their normal discovered-only rendering, ticking the checkbox while the map is open redraws it immediately, and the module stands down entirely when Leatrix Maps is loaded since it ships the same reveal option.
 - **Fixed Refactor fighting Leatrix Maps** — the Leatrix stand-down check never actually fired: `orig_IsAddOnLoaded` was declared `local` inside an `if` block, so the check read a nil global and Refactor's zoom/pan engine ran on top of Leatrix's built-in Magnify port. Two engines driving the same map caused quest markers to sit in wrong places and drift while zooming/panning, and the player arrow to show at the wrong location. The shim's saved original is now file-scoped, so with Leatrix Maps enabled Refactor's engine fully stands down (Leatrix drives zoom/pan, quest POIs, and the player arrow) while the Magnify shim, opt-in coordinates, and fade-while-moving keep working. Behavior without Leatrix is unchanged.
 
 ## [1.5.5]

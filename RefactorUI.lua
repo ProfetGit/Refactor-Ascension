@@ -1218,6 +1218,11 @@ local function BuildTweaksPage()
     QolCheck(0, y, "Fade map while moving",
         "Dims the map window while your character is moving. Mouse over the map to see it fully again.",
         "mapMoveFade")
+    y = y - 28
+    QolCheck(0, y, "Show unexplored areas",
+        "Clears the fog of war from every zone map, showing sub-zones you haven't discovered yet instead of leaving them blank."
+        .. leatrixNote,
+        "mapRevealFog")
     y = y - 36
 
     y = Section(child, "Social", 0, y - 8, INNER_W)

@@ -7,6 +7,7 @@
 
 Refactor.lua
 RefactorMap.lua
+RefactorFog.lua
 RefactorCompare.lua
 RefactorToast.lua
 RefactorCC.lua

@@ -42,6 +42,7 @@ local QOL_DEFAULTS = {
     mapClassIcons = true,  -- class-colored party/raid icons on the world map
     mapCoords = false,     -- player + cursor coordinates on the world map
     mapMoveFade = false,   -- fade the map window while the character moves
+    mapRevealFog = false,  -- show unexplored areas: reveal every sub-zone map overlay
     hideErrorText = true,  -- hide red UI error text ("Ability is not ready yet")
     muteErrorSpeech = true,-- silence "I can't do that yet" voice errors
     -- Companion to the silent-sound client patch (loose files under the
@@ -171,6 +172,9 @@ RefactorQoL = {
         if key == "muteErrorSpeech" then ApplyErrorSpeech() end
         if key == "fullMapWindow" and ApplyFullMapWindow then ApplyFullMapWindow() end
         if key == "fastLoot" then ApplyFastLootCVar() end
+        if key == "mapRevealFog" and RefactorFogShared and RefactorFogShared.Redraw then
+            RefactorFogShared.Redraw()
+        end
     end,
     -- Restores every QoL flag to its shipped default. Position/scale saves
     -- (map window, minimap button, CC alert) live outside qol and are
@@ -183,6 +187,7 @@ RefactorQoL = {
         ApplyErrorSpeech()
         ApplyFastLootCVar()
         if ApplyFullMapWindow then ApplyFullMapWindow() end
+        if RefactorFogShared and RefactorFogShared.Redraw then RefactorFogShared.Redraw() end
     end,
     -- Flips every QoL flag off in one click, so the player can then opt
     -- back into individual tweaks one at a time (the Pawn-style workflow
@@ -194,6 +199,7 @@ RefactorQoL = {
         ApplyErrorSpeech()
         ApplyFastLootCVar()
         if ApplyFullMapWindow then ApplyFullMapWindow() end
+        if RefactorFogShared and RefactorFogShared.Redraw then RefactorFogShared.Redraw() end
     end,
 }
 
