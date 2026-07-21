@@ -146,14 +146,32 @@ local function InitRefactorMap()
 
     local function SyncMapIconParents()
         if not WorldMapButton or not WorldMapFrame then return end
+        local detailScale = WorldMapDetailFrame:GetScale() or 1
+
         local children = { WorldMapFrame:GetChildren() }
         for _, child in ipairs(children) do
             if child ~= WorldMapScrollFrame and child ~= WorldMapDetailFrame and child ~= WorldMapButton and child ~= WorldMapFrameAreaFrame and child ~= coordsFrame and child ~= fadeFrame then
                 local name = child:GetName()
                 if name and (name:find("Mapster") or name:find("Option") or name:find("DropDown") or name:find("Title") or name:find("Close") or name:find("Track") or name:find("Zoom") or name:find("Guide")) then
                     -- UI control frame on WorldMapFrame: DO NOT REPARENT
-                elseif (name and (name:find("Questie") or name:find("HBDPin") or name:find("HBDDot") or name:find("HandyNotes") or name:find("GatherMate") or name:find("TomTomPin"))) or child.data or child.questId then
+                elseif (name and (name:find("Questie") or name:find("HBDPin") or name:find("HBDDot") or name:find("HandyNotes") or name:find("GatherMate") or name:find("TomTomPin") or name:find("LootCollector"))) or child.data or child.questId or child.discovery or child.itemLink or child.itemId then
                     child:SetParent(WorldMapButton)
+                end
+            end
+        end
+
+        local buttonChildren = { WorldMapButton:GetChildren() }
+        for _, child in ipairs(buttonChildren) do
+            if child ~= WorldMapPOIFrame and child ~= WorldMapBlobFrame and child ~= WorldMapPlayer and child ~= PlayerArrowFrame and child ~= PlayerArrowEffectFrame then
+                if child:GetScale() ~= 1 then
+                    child:SetScale(1)
+                end
+                if child.discovery or child.unlootedOutline or (child.texture and child.border) or (child:GetName() and child:GetName():find("LootCollector")) then
+                    local targetSize = 16 / detailScale
+                    child:SetSize(targetSize, targetSize)
+                    if child.border then child.border:SetSize(targetSize, targetSize) end
+                    if child.unlootedOutline then child.unlootedOutline:SetSize(targetSize, targetSize) end
+                    if child.texture then child.texture:SetSize(targetSize * 0.875, targetSize * 0.875) end
                 end
             end
         end
