@@ -2,6 +2,18 @@
 -- World map scroll-to-zoom/click-drag-pan and class-colored party/raid map
 -- icons, ported directly from the working Magnify-WotLK addon into Refactor.
 
+-- Shim IsAddOnLoaded so Questie, HereBeDragons, and other map icon libraries
+-- know a map zoom addon is active and parent their pins to WorldMapButton.
+if IsAddOnLoaded then
+    local orig_IsAddOnLoaded = IsAddOnLoaded
+    function IsAddOnLoaded(name, ...)
+        if name == "Magnify-WotLK" or name == "Magnify" then
+            return true, true
+        end
+        return orig_IsAddOnLoaded(name, ...)
+    end
+end
+
 local function InitRefactorMap()
     if not (WorldMapFrame and WorldMapDetailFrame
         and WorldMapButton and WORLDMAP_SETTINGS and WorldMapBlobFrame
@@ -37,11 +49,11 @@ local function InitRefactorMap()
     --------------------------------------------------------------------
 
     local coordsFrame = CreateFrame("Frame", nil, WorldMapFrame)
-    coordsFrame:SetFrameLevel(WORLDMAP_POI_FRAMELEVEL or 10)
+    coordsFrame:SetFrameLevel((WORLDMAP_POI_FRAMELEVEL or 10) + 20)
     local playerCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    playerCoords:SetPoint("BOTTOMLEFT", WorldMapScrollFrame, "BOTTOMLEFT", 8, 8)
+    playerCoords:SetPoint("BOTTOMLEFT", WorldMapFrame, "BOTTOMLEFT", 20, 10)
     local cursorCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    cursorCoords:SetPoint("BOTTOMRIGHT", WorldMapScrollFrame, "BOTTOMRIGHT", -8, 8)
+    cursorCoords:SetPoint("BOTTOMRIGHT", WorldMapFrame, "BOTTOMRIGHT", -20, 10)
 
     local function CursorMapPosition()
         local left, top = WorldMapDetailFrame:GetLeft(), WorldMapDetailFrame:GetTop()
@@ -124,8 +136,27 @@ local function InitRefactorMap()
     -- Leatrix Maps stand-down check
     --------------------------------------------------------------------
 
-    if IsAddOnLoaded("Leatrix_Maps") then
+    if orig_IsAddOnLoaded and orig_IsAddOnLoaded("Leatrix_Maps") then
         return
+    end
+
+    --------------------------------------------------------------------
+    -- Map Icon Parent Sync Helper
+    --------------------------------------------------------------------
+
+    local function SyncMapIconParents()
+        if not WorldMapButton or not WorldMapFrame then return end
+        local children = { WorldMapFrame:GetChildren() }
+        for _, child in ipairs(children) do
+            if child ~= WorldMapScrollFrame and child ~= WorldMapDetailFrame and child ~= WorldMapButton and child ~= WorldMapFrameAreaFrame and child ~= coordsFrame and child ~= fadeFrame then
+                local name = child:GetName()
+                if name and (name:find("Mapster") or name:find("Option") or name:find("DropDown") or name:find("Title") or name:find("Close") or name:find("Track") or name:find("Zoom") or name:find("Guide")) then
+                    -- UI control frame on WorldMapFrame: DO NOT REPARENT
+                elseif (name and (name:find("Questie") or name:find("HBDPin") or name:find("HBDDot") or name:find("HandyNotes") or name:find("GatherMate") or name:find("TomTomPin"))) or child.data or child.questId then
+                    child:SetParent(WorldMapButton)
+                end
+            end
+        end
     end
 
     --------------------------------------------------------------------
@@ -416,6 +447,8 @@ local function InitRefactorMap()
                     raidFrame:SetParent(WorldMapDetailFrame)
                 end
             end
+
+            SyncMapIconParents()
         end
 
         updatePointRelativeTo(WorldMapQuestScrollFrame, WorldMapScrollFrame)
@@ -467,6 +500,8 @@ local function InitRefactorMap()
         if WorldMapScrollFrame.panning then
             WorldMapScrollFrame_OnPan(GetCursorPosition())
         end
+
+        SyncMapIconParents()
 
         local playerX, playerY = GetPlayerMapPosition("player")
         if not (playerX == 0 and playerY == 0) then
@@ -717,7 +752,7 @@ local function InitRefactorMap()
     end)
 end
 
-if IsAddOnLoaded("Blizzard_WorldMap") or WorldMapFrame then
+if orig_IsAddOnLoaded and orig_IsAddOnLoaded("Blizzard_WorldMap") or WorldMapFrame then
     InitRefactorMap()
 else
     local loadFrame = CreateFrame("Frame")
