@@ -1799,6 +1799,12 @@ local function BuildTweaksPage()
         "Hands in completed quests. Multiple reward choices leave the window open.",
         "questTurnIn")
     y = y - 28
+    QolCheck(0, y, "Auto-pick quest rewards",
+        "Takes the reward that's the biggest upgrade under your stat weights; if none is an upgrade, takes the one with the highest sell value. Needs the gear comparison enabled. Skips the pick (leaving the window open) whenever the answer isn't clear-cut — an unreadable reward, an exact tie, or a reward your secondary profile wants. Hold Shift to decide yourself.",
+        "questAutoReward", function()
+            return RefactorCompareShared and RefactorCompareShared.IsEnabled()
+        end)
+    y = y - 28
     QolCheck(0, y, "Auto-pick quests from gossip",
         "Selects available and completable quests from NPC dialog menus.",
         "questGossip")

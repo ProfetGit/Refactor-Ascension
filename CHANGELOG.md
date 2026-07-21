@@ -2,6 +2,9 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+- **New: "Auto-pick quest rewards"** (Tweaks page, Questing section, off by default) — when a quest offers a choice of rewards, takes the one that's the biggest upgrade under your stat weights, and if none is an upgrade, the one with the highest sell value. Ranking uses the absolute score gain, not the percentage, so a +50% ring can't beat a +10% two-hander that's worth far more stats. Because the pick can't be undone, it declines to act on anything less than a clear answer: an unreadable reward, a score from a bare link, two rewards tied exactly, or a reward your secondary profile wants all leave the window open for you. Holding Shift (before or during) cancels it, it needs the gear comparison enabled, and every pick prints what it took and why.
+
 ## [1.5.6]
 - **Config window reskinned onto Ascension's own atlas art** — the window now wears the DiamondMetal frame border and header band over a solid dark background (no more see-through stock dialog art), red atlas panel buttons, a real search field with magnifying glass, placeholder and clear button, minimal atlas scrollbars and slider tracks, and an atlas close button.
 - **New dropdowns** — the profile, secondary-profile and price-source dropdowns are a custom retail-style pill + popup list (checkmark column, hover highlight, Escape or an outside click closes) instead of Blizzard's `UIDropDownMenu`. The list sizes itself to the longest entry, so long profile names like "Knight of Xoroth - Defiance" read in full.

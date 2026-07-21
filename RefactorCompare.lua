@@ -1482,6 +1482,11 @@ end
 -- show — including any side we couldn't actually read) or a result table:
 --   status  = "upgrade" | "downgrade" | "even" | "empty"
 --   pct     = signed % difference (for upgrade/downgrade/even)
+--   gain    = absolute score difference (new - equipped; the new item's own
+--             score when the slot is empty or scores zero). Percentages are
+--             not comparable across slots — a +50% ring can be worth less
+--             than a +10% two-hander — so anything ranking DIFFERENT items
+--             against each other (quest reward auto-pick) must use this.
 --   context = optional extra text, e.g. "vs main + off hand"
 -- profile nil = the active profile (ScoreEquipped's primary memo fields);
 -- the secondary verdict passes its own profile. The slot logic below is
@@ -1498,7 +1503,8 @@ local function VerdictForProfile(info, profile)
         local oh, ohDps = ScoreEquipped(17, profile)
         if mh == false or oh == false then return nil end
         if not mh and not oh then
-            return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
+            return { status = "empty", gain = info.score,
+                levelLocked = info.levelLocked, approx = info.approx }
         end
         equippedScore = (mh or 0) + (oh or 0)
         if oh and ohDps then
@@ -1529,7 +1535,8 @@ local function VerdictForProfile(info, profile)
             local s = ScoreEquipped(slot, profile)
             if s == false then return nil end
             if not s then
-                return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
+                return { status = "empty", gain = info.score,
+                    levelLocked = info.levelLocked, approx = info.approx }
             end
             if not equippedScore or s < equippedScore then
                 equippedScore, weakerSlot = s, slot
@@ -1545,7 +1552,8 @@ local function VerdictForProfile(info, profile)
     end
 
     if not equippedScore then
-        return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
+        return { status = "empty", gain = info.score,
+            levelLocked = info.levelLocked, approx = info.approx }
     end
     if equippedScore <= 0 then
         -- Equipped item scores zero or negative under these weights; a
@@ -1557,12 +1565,14 @@ local function VerdictForProfile(info, profile)
         -- belt) score worn gear at 0 all the time.
         if info.score > 0 then
             return { status = "empty", zeroBaseline = true, context = context,
+                gain = info.score,
                 levelLocked = info.levelLocked, approx = info.approx }
         end
         -- BOTH sides score nothing: not parity — this profile simply has no
         -- weights for anything on either item. zeroAll marks it so renderers
         -- say "No value" instead of a misleading "0%".
         return { status = "even", pct = 0, zeroAll = true, context = context,
+            gain = 0,
             levelLocked = info.levelLocked, approx = info.approx }
     end
 
@@ -1576,6 +1586,7 @@ local function VerdictForProfile(info, profile)
     else status = "even" end
 
     return { status = status, pct = pct, context = context,
+        gain = info.score - equippedScore,
         levelLocked = info.levelLocked, approx = info.approx }
 end
 
