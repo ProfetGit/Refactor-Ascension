@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.5]
+- **Fixed zoom and pan engine** (PR #16, @ThatGuyJon) — reworked the world map scroll-zoom/click-drag-pan port so zooming stays centered on the cursor and panning behaves at every zoom level.
+- **Mapster compatibility** (PR #16, @ThatGuyJon) — the map engine now coexists with Mapster's layout and scaling instead of fighting it, fixing assorted Mapster UI issues.
+- **Fixed LootCollector map pin issues** (PR #17, @ThatGuyJon) — LootCollector pins are reparented into the zoom-aware map layer so they track zoom/pan, and their size is normalized (constant on-screen size at any zoom) instead of blowing up or shrinking with the map.
+- **Map Filter button and LootCollector search bar no longer fly off screen when zooming** — the game's Map Filter button (`WorldMapButtonFilters`) lived inside the zoomed map hierarchy, so the zoom engine scaled/panned it away and LootCollector's filter button (which anchors to it) went with it; both it and the LootCollector map search bar are now pinned to the map viewport (top-right and bottom-center respectively) at a fixed scale, and raised above the map's click-catcher so they stay hoverable and clickable.
+
 ## [1.5.4]
 - Fixed world map party/raid dots showing white for everyone: class-color lookup failures (`UnitClass` returns nil until the server sends a member's class) were cached until the next roster change, and a dirty-check early-return could leave the uncolored white icon texture visible instead of the stock dot. Failures are now retried every frame until they succeed, and the fallback to the stock dot is applied correctly. Ascension's extended `RAID_CLASS_COLORS` is used for the CoA class colors, with `CUSTOM_CLASS_COLORS` as a fallback.
 

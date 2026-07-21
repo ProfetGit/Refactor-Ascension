@@ -148,9 +148,49 @@ local function InitRefactorMap()
         if not WorldMapButton or not WorldMapFrame then return end
         local detailScale = WorldMapDetailFrame:GetScale() or 1
 
+        -- The game's "Map Filter" button (WorldMapButtonFilters) lives inside
+        -- the zoomed map hierarchy, so the zoom/pan engine scales and pans it
+        -- off screen. LootCollector's filter button anchors to it and flies
+        -- off with it. Reparent it to WorldMapFrame and pin it to the
+        -- top-right corner of the map viewport so both stay put while zooming.
+        local mapFilterButton = _G["WorldMapButtonFilters"]
+        if mapFilterButton then
+            if mapFilterButton:GetParent() ~= WorldMapFrame then
+                mapFilterButton:SetParent(WorldMapFrame)
+                mapFilterButton:ClearAllPoints()
+                mapFilterButton:SetPoint("TOPRIGHT", WorldMapScrollFrame, "TOPRIGHT", -10, -2)
+            end
+            -- Sit above WorldMapButton (the full-map click catcher) or it
+            -- swallows all hover/clicks.
+            mapFilterButton:SetFrameStrata("FULLSCREEN_DIALOG")
+            mapFilterButton:SetToplevel(true)
+            if mapFilterButton:GetScale() ~= 1 then
+                mapFilterButton:SetScale(1)
+            end
+        end
+
+        -- LootCollector's map search bar is parented to WorldMapDetailFrame,
+        -- so it scales/pans with the zoom engine. Reparent it to
+        -- WorldMapFrame and pin it to the bottom of the map viewport.
+        local mapSearchFrame = _G["LootCollectorMapSearchFrame"]
+        if mapSearchFrame then
+            if mapSearchFrame:GetParent() ~= WorldMapFrame then
+                mapSearchFrame:SetParent(WorldMapFrame)
+                mapSearchFrame:ClearAllPoints()
+                mapSearchFrame:SetPoint("BOTTOM", WorldMapScrollFrame, "BOTTOM", 0, 6)
+            end
+            -- Sit above WorldMapButton (the full-map click catcher) or it
+            -- swallows all hover/clicks.
+            mapSearchFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+            mapSearchFrame:SetToplevel(true)
+            if mapSearchFrame:GetScale() ~= 1 then
+                mapSearchFrame:SetScale(1)
+            end
+        end
+
         local children = { WorldMapFrame:GetChildren() }
         for _, child in ipairs(children) do
-            if child ~= WorldMapScrollFrame and child ~= WorldMapDetailFrame and child ~= WorldMapButton and child ~= WorldMapFrameAreaFrame and child ~= coordsFrame and child ~= fadeFrame then
+            if child ~= WorldMapScrollFrame and child ~= WorldMapDetailFrame and child ~= WorldMapButton and child ~= WorldMapFrameAreaFrame and child ~= coordsFrame and child ~= fadeFrame and child ~= _G["LootCollectorMapSearchFrame"] then
                 local name = child:GetName()
                 if name and (name:find("Mapster") or name:find("Option") or name:find("DropDown") or name:find("Title") or name:find("Close") or name:find("Track") or name:find("Zoom") or name:find("Guide")) then
                     -- UI control frame on WorldMapFrame: DO NOT REPARENT
