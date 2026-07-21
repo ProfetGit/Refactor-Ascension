@@ -4,8 +4,11 @@
 
 -- Shim IsAddOnLoaded so Questie, HereBeDragons, and other map icon libraries
 -- know a map zoom addon is active and parent their pins to WorldMapButton.
-if IsAddOnLoaded then
-    local orig_IsAddOnLoaded = IsAddOnLoaded
+-- NOTE: orig_IsAddOnLoaded must be file-scoped — the Leatrix Maps stand-down
+-- check in InitRefactorMap() and the loader check at the bottom of this file
+-- both depend on it. Declaring it inside the `if` block silently nils those.
+local orig_IsAddOnLoaded = IsAddOnLoaded
+if orig_IsAddOnLoaded then
     function IsAddOnLoaded(name, ...)
         if name == "Magnify-WotLK" or name == "Magnify" then
             return true, true

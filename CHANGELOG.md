@@ -2,6 +2,9 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+- **Fixed Refactor fighting Leatrix Maps** — the Leatrix stand-down check never actually fired: `orig_IsAddOnLoaded` was declared `local` inside an `if` block, so the check read a nil global and Refactor's zoom/pan engine ran on top of Leatrix's built-in Magnify port. Two engines driving the same map caused quest markers to sit in wrong places and drift while zooming/panning, and the player arrow to show at the wrong location. The shim's saved original is now file-scoped, so with Leatrix Maps enabled Refactor's engine fully stands down (Leatrix drives zoom/pan, quest POIs, and the player arrow) while the Magnify shim, opt-in coordinates, and fade-while-moving keep working. Behavior without Leatrix is unchanged.
+
 ## [1.5.5]
 - **Fixed zoom and pan engine** (PR #16, @ThatGuyJon) — reworked the world map scroll-zoom/click-drag-pan port so zooming stays centered on the cursor and panning behaves at every zoom level.
 - **Mapster compatibility** (PR #16, @ThatGuyJon) — the map engine now coexists with Mapster's layout and scaling instead of fighting it, fixing assorted Mapster UI issues.
