@@ -319,7 +319,7 @@ local CLASS_SPEC_WEIGHTS = {
         { name = "Moon_Priest", weights = { INT = 1, SPI = 0.5, CRIT = 0.505, HASTE = 0.65, MP5 = 0.3, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Sentinel",    weights = { AGI = 1.366, INT = 2.1, CRIT = 0.778, HASTE = 0.1, SP = 0.25, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
         { name = "Warden",      weights = { STR = 0.55, AGI = 0.829, INT = 2, CRIT = 0.7, HASTE = 0.6, DPS = 14, AP = 0.5, SP = 1, ARP = 0.3, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
-        { name = "Moonguard",   weights = { STR = 2.041, AGI = 2.147, STA = 1.1, INT = 0.721, CRIT = 0.354, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 0.75, SP = 1, ARP = 0.15, EXP = 0.5, ARMOR = 0.2, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, BLOCK = 0.75, SOCKET = 20, UNKNOWN = 0.1 } },
+        { name = "Moonguard",   weights = { STR = 2.04, AGI = 2.15, STA = 1.1, INT = 0.72, CRIT = 0.35, HIT = 0.5, HASTE = 0.35, DPS = 14, AP = 0.75, SP = 1, MP5 = 0.1, ARP = 0.15, EXP = 0.5, ARMOR = 0.2, DEF = 1.05, DODGE = 0.9, PARRY = 0.9, BLOCK = 0.75, SOCKET = 20, UNKNOWN = 0.1 } },
     },
     STORMBRINGER = {
         { name = "Lightning", weights = { INT = 1, CRIT = 1.563, HIT = 0.5, HASTE = 0.6, SP = 1, ARMOR = 0.01, SOCKET = 20, UNKNOWN = 0.1 } },
@@ -3074,16 +3074,6 @@ local function DeleteProfile(name)
         RefreshConfig()
     end
 end
-
--- Confirmation for the UI's profile delete button — destructive, so it
--- stays a popup.
-StaticPopupDialogs["REFACTORCOMPARE_DELETE_PROFILE"] = {
-    text = "Delete profile '%s'?",
-    button1 = YES,
-    button2 = NO,
-    OnAccept = function(self, data) DeleteProfile(data or self.data) end,
-    timeout = 0, whileDead = 1, hideOnEscape = 1,
-}
 
 RefactorCompareShared.SaveProfileAs = SaveProfileAs
 RefactorCompareShared.DeleteProfile = DeleteProfile

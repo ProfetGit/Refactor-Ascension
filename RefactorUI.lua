@@ -9,8 +9,8 @@
 -- arrows refresh, tweaks re-check their flag at use time), so there is
 -- no Apply/OK step.
 --
--- Look: stock Blizzard dialog art — the UI-DialogBox backdrop and
--- border, a header ribbon, red panel buttons, native checkbox and
+-- Look: the DiamondMetal atlas frame border over a flat dark
+-- background, a header ribbon, red panel buttons, native checkbox and
 -- input-box art, quest-log gold highlights — so the window reads as
 -- part of the game, not a web panel dropped into it. Three columns:
 -- sidebar (search + nav), the option list, and a detail pane that
@@ -35,7 +35,8 @@ local SIDEBAR_W = 170
 local DETAIL_W = 210
 local HEADER_H = 42
 local PAD = 16
-local INSET = 11 -- thickness the UI-DialogBox-Border art eats
+local INSET = 11 -- thickness the DiamondMetal border art eats
+local BORDER_SIZE = 32 -- display size of the -8x DiamondMetal border pieces
 -- Center column right edge: detail pane + its divider gutter.
 local CENTER_RIGHT = INSET + DETAIL_W + 18
 local CONTENT_W = W_WIDTH - (INSET + SIDEBAR_W + PAD) - CENTER_RIGHT -- 484
@@ -77,6 +78,10 @@ end
 -- the next hover or a page switch (sticky, so text doesn't flicker away
 -- while the mouse travels). SetDetail is bound in BuildWindow.
 local SetDetail
+
+-- Modal confirm/prompt popup (built near BuildWindow, below); forward
+-- declared so the earlier page builders can call it from button handlers.
+local ShowPopup
 
 -- HookScript (not SetScript) so widgets keep their own hover styling.
 local function Explain(widget, title, body)
@@ -189,23 +194,192 @@ local function MakeCheck(parent, x, y, width, label, desc, get, set, tip, isEnab
     return row
 end
 
--- Stock red panel button (UI-Panel-Button art, drawn by hand — the
--- UIPanelButtonTemplate variants need global names, these buttons are
--- anonymous). Every button shares the one look; hierarchy comes from
--- placement, exactly like the stock UI.
+-- Resolves an atlas name onto a texture. SetAtlas is preferred;
+-- GetAtlasInfo + manual texcoords is the fallback if it is missing.
+local function ApplyAtlas(tex, atlas)
+    if tex.SetAtlas then
+        tex:SetAtlas(atlas)
+        return
+    end
+    local info = GetAtlasInfo and GetAtlasInfo(atlas)
+    if not info then return end
+    tex:SetTexture(info.file)
+    tex:SetTexCoord(info.leftTexCoord, info.rightTexCoord,
+                    info.topTexCoord, info.bottomTexCoord)
+end
+
+-- Keeps only the rightmost `keep` fraction of a texture's current
+-- texcoord span (squares off the over-wide redbutton right cap).
+local function CropRightTexCoord(tex, keep)
+    local ulx, uly, _, lly, urx, ury, _, lry = tex:GetTexCoord()
+    local nl = urx - (urx - ulx) * keep
+    tex:SetTexCoord(nl, uly, nl, lly, urx, ury, urx, lry)
+end
+
+-- Crops a texture's current texcoord rect (already set by ApplyAtlas) down
+-- to the pixel range [x1,x2]x[y1,y2] of a srcW x srcH source region — the
+-- manual nine-slice this client's plain textures can't apply on their own
+-- (the CommonDropdown2x atlas ships slice= data for it, but that's a
+-- retail 9-slice hint this client's SetAtlas doesn't act on).
+local function CropTexCoordRect(tex, srcW, srcH, x1, y1, x2, y2)
+    local ulx, uly, _, lly, urx, ury, _, lry = tex:GetTexCoord()
+    local spanX, spanY = urx - ulx, lly - uly
+    local nx1, nx2 = ulx + spanX * (x1 / srcW), ulx + spanX * (x2 / srcW)
+    local ny1, ny2 = uly + spanY * (y1 / srcH), uly + spanY * (y2 / srcH)
+    tex:SetTexCoord(nx1, ny1, nx1, ny2, nx2, ny1, nx2, ny2)
+end
+
+-- Horizontal three-slice strip (fixed end caps, stretched middle) cut from
+-- one atlas image via CropTexCoordRect, stretched to fill `region`. Used
+-- for both the dropdown pill (whole button) and the list-row hover strip
+-- (common-dropdown-textholder). Returns a Show/Hide pair driving all three
+-- pieces as one unit.
+local function BuildStripH(region, atlas, srcW, srcH, capL, capR, layer)
+    local left = region:CreateTexture(nil, layer or "ARTWORK")
+    ApplyAtlas(left, atlas)
+    CropTexCoordRect(left, srcW, srcH, 0, 0, capL, srcH)
+    left:SetWidth(capL)
+    left:SetPoint("TOPLEFT", 0, 0)
+    left:SetPoint("BOTTOMLEFT", 0, 0)
+
+    local center = region:CreateTexture(nil, layer or "ARTWORK")
+    ApplyAtlas(center, atlas)
+    CropTexCoordRect(center, srcW, srcH, capL, 0, srcW - capR, srcH)
+    center:SetPoint("TOPLEFT", capL, 0)
+    center:SetPoint("BOTTOMRIGHT", -capR, 0)
+
+    local right = region:CreateTexture(nil, layer or "ARTWORK")
+    ApplyAtlas(right, atlas)
+    CropTexCoordRect(right, srcW, srcH, srcW - capR, 0, srcW, srcH)
+    right:SetWidth(capR)
+    right:SetPoint("TOPRIGHT", 0, 0)
+    right:SetPoint("BOTTOMRIGHT", 0, 0)
+
+    local pieces = { left, center, right }
+    return {
+        Show = function() for _, t in ipairs(pieces) do t:Show() end end,
+        Hide = function() for _, t in ipairs(pieces) do t:Hide() end end,
+    }
+end
+
+-- Nine-slice panel (fixed corners, stretched edges, stretched center fill)
+-- cut from one atlas image — the CommonDropdown2x list background.
+local function BuildNineSlicePanel(region, atlas, srcW, srcH, capL, capT, capR, capB)
+    local function piece(x1, y1, x2, y2)
+        local t = region:CreateTexture(nil, "BACKGROUND")
+        ApplyAtlas(t, atlas)
+        CropTexCoordRect(t, srcW, srcH, x1, y1, x2, y2)
+        return t
+    end
+
+    local tl = piece(0, 0, capL, capT)
+    tl:SetSize(capL, capT)
+    tl:SetPoint("TOPLEFT", 0, 0)
+    local tr = piece(srcW - capR, 0, srcW, capT)
+    tr:SetSize(capR, capT)
+    tr:SetPoint("TOPRIGHT", 0, 0)
+    local bl = piece(0, srcH - capB, capL, srcH)
+    bl:SetSize(capL, capB)
+    bl:SetPoint("BOTTOMLEFT", 0, 0)
+    local br = piece(srcW - capR, srcH - capB, srcW, srcH)
+    br:SetSize(capR, capB)
+    br:SetPoint("BOTTOMRIGHT", 0, 0)
+
+    local top = piece(capL, 0, srcW - capR, capT)
+    top:SetHeight(capT)
+    top:SetPoint("TOPLEFT", capL, 0)
+    top:SetPoint("TOPRIGHT", -capR, 0)
+
+    local bottom = piece(capL, srcH - capB, srcW - capR, srcH)
+    bottom:SetHeight(capB)
+    bottom:SetPoint("BOTTOMLEFT", capL, 0)
+    bottom:SetPoint("BOTTOMRIGHT", -capR, 0)
+
+    local left = piece(0, capT, capL, srcH - capB)
+    left:SetWidth(capL)
+    left:SetPoint("TOPLEFT", 0, -capT)
+    left:SetPoint("BOTTOMLEFT", 0, capB)
+
+    local right = piece(srcW - capR, capT, srcW, srcH - capB)
+    right:SetWidth(capR)
+    right:SetPoint("TOPRIGHT", 0, -capT)
+    right:SetPoint("BOTTOMRIGHT", 0, capB)
+
+    local center = piece(capL, capT, srcW - capR, srcH - capB)
+    center:SetPoint("TOPLEFT", capL, -capT)
+    center:SetPoint("BOTTOMRIGHT", -capR, capB)
+end
+
+-- Red panel button from the 128-redbutton atlas set: left/right caps
+-- around the tiling center, drawn as three ARTWORK textures per state
+-- (a Button's NormalTexture is a single texture, so three-slice states
+-- are swapped by hand). The right slice ships 292px wide and is cropped
+-- to the left cap's 114px.
+-- The right slices are the mixed-case "128-RedButton-Right*" names: this
+-- client registers those separately from the all-lowercase spellings the
+-- other slices use, and the lowercase right variants resolve to older art.
+local RB_CAP = 114 / 128      -- cap width as a fraction of button height
+local RB_RIGHT_KEEP = 114 / 292
+
 local function MakeButton(parent, w, h, label, onClick)
     local b = CreateFrame("Button", nil, parent)
     b:SetWidth(w)
     b:SetHeight(h)
-    b:SetNormalTexture("Interface\\Buttons\\UI-Panel-Button-Up")
-    b:GetNormalTexture():SetTexCoord(0, 0.625, 0, 0.6875)
-    b:SetPushedTexture("Interface\\Buttons\\UI-Panel-Button-Down")
-    b:GetPushedTexture():SetTexCoord(0, 0.625, 0, 0.6875)
-    b:SetHighlightTexture("Interface\\Buttons\\UI-Panel-Button-Highlight")
-    b:GetHighlightTexture():SetTexCoord(0, 0.625, 0, 0.6875)
-    b:GetHighlightTexture():SetBlendMode("ADD")
-    b:SetDisabledTexture("Interface\\Buttons\\UI-Panel-Button-Disabled")
-    b:GetDisabledTexture():SetTexCoord(0, 0.625, 0, 0.6875)
+
+    local capW = math.min(math.floor(h * RB_CAP + 0.5), math.floor(w / 2))
+    local stateAtlases = {
+        normal   = { "128-redbutton-left", "_128-redbutton-center", "128-RedButton-Right" },
+        pressed  = { "128-redbutton-left-pressed", "_128-redbutton-center-pressed", "128-RedButton-Right-Pressed" },
+        disabled = { "128-redbutton-left-disabled", "_128-redbutton-center-disabled", "128-RedButton-Right-Disabled" },
+    }
+
+    local groups = {}
+    for state, atlases in pairs(stateAtlases) do
+        local left = b:CreateTexture(nil, "ARTWORK")
+        ApplyAtlas(left, atlases[1])
+        left:SetWidth(capW)
+        left:SetPoint("TOPLEFT", 0, 0)
+        left:SetPoint("BOTTOMLEFT", 0, 0)
+
+        local center = b:CreateTexture(nil, "ARTWORK")
+        ApplyAtlas(center, atlases[2])
+        center:SetPoint("TOPLEFT", capW, 0)
+        center:SetPoint("BOTTOMRIGHT", -capW, 0)
+
+        local right = b:CreateTexture(nil, "ARTWORK")
+        ApplyAtlas(right, atlases[3])
+        CropRightTexCoord(right, RB_RIGHT_KEEP)
+        right:SetWidth(capW)
+        right:SetPoint("TOPRIGHT", 0, 0)
+        right:SetPoint("BOTTOMRIGHT", 0, 0)
+
+        groups[state] = { left, center, right }
+    end
+
+    local function ShowState(state)
+        for name, g in pairs(groups) do
+            for i = 1, 3 do
+                if name == state then g[i]:Show() else g[i]:Hide() end
+            end
+        end
+    end
+
+    -- One full-width highlight art, stretched over the assembled button.
+    local hl = b:CreateTexture(nil, "HIGHLIGHT")
+    ApplyAtlas(hl, "128-redbutton-highlight")
+    hl:SetAllPoints(b)
+    hl:SetBlendMode("ADD")
+
+    b:SetScript("OnMouseDown", function(self)
+        if self:IsEnabled() then ShowState("pressed") end
+    end)
+    b:SetScript("OnMouseUp", function(self)
+        ShowState(self:IsEnabled() and "normal" or "disabled")
+    end)
+    b:SetScript("OnEnable", function() ShowState("normal") end)
+    b:SetScript("OnDisable", function() ShowState("disabled") end)
+    ShowState("normal")
+
     local t = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     t:SetPoint("CENTER", 0, 0)
     b:SetFontString(t)
@@ -217,39 +391,366 @@ local function MakeButton(parent, w, h, label, onClick)
     return b
 end
 
--- Edit box wearing InputBoxTemplate's three-slice border art (drawn by
--- hand — the template needs a global name). Slices tint gold on focus.
--- With get/set (numeric): commits on Enter / focus lost, reverts on
--- Escape. Without: plain text field, read via GetText().
-local function MakeEdit(parent, w, get, set)
-    local eb = CreateFrame("EditBox", nil, parent)
-    eb:SetWidth(w)
-    eb:SetHeight(20)
-    eb:SetAutoFocus(false)
-    eb:SetFontObject(ChatFontNormal)
-    eb:SetTextInsets(6, 6, 0, 0)
+-- common-dropdown-b-button (CommonDropdown2x atlas): a 97x26 pill with the
+-- dropdown chevron baked into its right cap, slice={8,0,18,0} — left cap
+-- 8px, right cap 18px, middle stretches. None of Refactor's dropdowns are
+-- ever disabled, so only the states the click handler actually drives are
+-- built (the kit also has disabled/open/pressedhover for a future caller).
+local DD_PILL_W, DD_PILL_H = 97, 26
+local DD_PILL_CAP_L, DD_PILL_CAP_R = 8, 18
+local DD_PILL_ATLAS_STATES = {
+    normal  = "common-dropdown-b-button-2x",
+    hover   = "common-dropdown-b-button-hover-2x",
+    pressed = "common-dropdown-b-button-pressed-2x",
+}
 
-    local slices = {}
-    local function Slice(x1, x2)
-        local t = eb:CreateTexture(nil, "BACKGROUND")
-        t:SetTexture("Interface\\Common\\Common-Input-Border")
-        t:SetTexCoord(x1, x2, 0, 0.625)
-        t:SetHeight(20)
-        tinsert(slices, t)
-        return t
+-- Builds one BuildStripH per state and returns a ShowState(name) setter
+-- that shows exactly one at a time.
+local function BuildDropdownPill(parent)
+    local groups = {}
+    for state, atlas in pairs(DD_PILL_ATLAS_STATES) do
+        local strip = BuildStripH(parent, atlas, DD_PILL_W, DD_PILL_H,
+            DD_PILL_CAP_L, DD_PILL_CAP_R)
+        strip.Hide() -- BuildStripH's textures start shown; stack all three
+                     -- and only the active one is revealed below
+        groups[state] = strip
     end
-    local left = Slice(0, 0.0625)
-    left:SetWidth(8)
-    left:SetPoint("LEFT", -5, 0)
-    local right = Slice(0.9375, 1)
-    right:SetWidth(8)
-    right:SetPoint("RIGHT", 0, 0)
-    local mid = Slice(0.0625, 0.9375)
+    local current
+    local function ShowState(state)
+        if current then current.Hide() end
+        current = groups[state]
+        current.Show()
+    end
+    ShowState("normal")
+    return ShowState
+end
+
+--------------------------------------------------------------------------
+-- Dropdown popup list (common-dropdown-bg panel + common-dropdown-
+-- textholder row highlight + the yellow checkmark icon) — a full custom
+-- replacement for Blizzard's UIDropDownMenu list frame, not a reskin of
+-- it, since that frame's own art can't be swapped out from under it.
+-- One shared list frame (nothing here stacks); items are plain
+-- {text, checked, func} tables the dropdown's itemsFn returns.
+--------------------------------------------------------------------------
+local DD_BG_ATLAS = "common-dropdown-bg-2x"
+local DD_BG_W, DD_BG_H = 68, 68
+local DD_BG_L, DD_BG_T, DD_BG_R, DD_BG_B = 16, 13, 16, 19 -- asymmetric: baked drop shadow at the bottom
+
+local DD_ROWSTRIP_ATLAS = "common-dropdown-textholder-2x"
+local DD_ROWSTRIP_W, DD_ROWSTRIP_H = 54, 41
+local DD_ROWSTRIP_CAP_L, DD_ROWSTRIP_CAP_R = 16, 19
+local DD_ROW_H = 24
+-- Row label insets: the left one clears the checkmark column.
+local DD_LABEL_L, DD_LABEL_R = 30, 10
+-- The list is free to be wider than its pill (it opens over the page, and
+-- profile names like "Knight of Xoroth - Defiance" don't fit a 200px pill).
+-- Capped so a stray long name can't run off the window.
+local DD_MAX_W = 420
+
+local ddList, ddBlocker
+
+local function HideDropdownList()
+    if ddList then
+        ddList:Hide()
+        ddList.owner = nil
+    end
+end
+
+local function BuildDropdownList()
+    -- Full-screen catcher behind the list: closes it on an outside click.
+    local blocker = CreateFrame("Button", nil, UIParent)
+    blocker:SetAllPoints(UIParent)
+    blocker:SetFrameStrata("FULLSCREEN_DIALOG")
+    blocker:SetFrameLevel(1)
+    blocker:Hide()
+    blocker:SetScript("OnClick", HideDropdownList)
+    ddBlocker = blocker
+
+    local list = CreateFrame("Frame", "RefactorUIDropdownList", UIParent)
+    list:SetFrameStrata("FULLSCREEN_DIALOG")
+    list:SetFrameLevel(10)
+    list:SetToplevel(true)
+    list:SetClampedToScreen(true)
+    list:Hide()
+    BuildNineSlicePanel(list, DD_BG_ATLAS, DD_BG_W, DD_BG_H,
+        DD_BG_L, DD_BG_T, DD_BG_R, DD_BG_B)
+    list.rows = {}
+    -- Hidden, width-unconstrained twin of a row label: the real labels are
+    -- anchored LEFT+RIGHT, so their GetStringWidth reports the constrained
+    -- (truncated) width and can't size the list. This one measures the
+    -- text's natural width instead.
+    list.measure = list:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    list.measure:SetPoint("TOPLEFT")
+    list.measure:Hide()
+    -- The blocker only exists to back an open list, so bind it to the
+    -- list's visibility here: every close path (row click, outside click,
+    -- Escape via UISpecialFrames, window close) runs through OnHide, so
+    -- the full-screen catcher can never outlive the list it belongs to.
+    list:SetScript("OnHide", function()
+        if ddBlocker then ddBlocker:Hide() end
+    end)
+    tinsert(UISpecialFrames, "RefactorUIDropdownList") -- Escape closes
+    ddList = list
+    return list
+end
+
+local function GetDropdownRow(list, index)
+    local row = list.rows[index]
+    if row then return row end
+
+    row = CreateFrame("Button", nil, list)
+    row:SetHeight(DD_ROW_H)
+
+    local hl = BuildStripH(row, DD_ROWSTRIP_ATLAS, DD_ROWSTRIP_W, DD_ROWSTRIP_H,
+        DD_ROWSTRIP_CAP_L, DD_ROWSTRIP_CAP_R, "ARTWORK")
+    hl.Hide()
+
+    local check = row:CreateTexture(nil, "OVERLAY")
+    ApplyAtlas(check, "common-dropdown-icon-checkmark-yellow-2x")
+    check:SetSize(15, 14)
+    check:SetPoint("LEFT", 10, 0)
+
+    local label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    label:SetPoint("LEFT", DD_LABEL_L, 0)
+    label:SetPoint("RIGHT", -DD_LABEL_R, 0)
+    label:SetJustifyH("LEFT")
+
+    row:SetScript("OnEnter", function() hl.Show() end)
+    row:SetScript("OnLeave", function() hl.Hide() end)
+    row:SetScript("OnClick", function(self)
+        HideDropdownList()
+        if self.onClick then self.onClick() end
+    end)
+
+    row.hl, row.check, row.label = hl, check, label
+    list.rows[index] = row
+    return row
+end
+
+local function OpenDropdownList(dd)
+    local list = ddList or BuildDropdownList()
+    local items = dd.itemsFn and dd.itemsFn() or {}
+
+    -- Width first: measure every entry's natural text width so long profile
+    -- names read in full. The pill's width is the floor, DD_MAX_W the cap.
+    local chrome = DD_LABEL_L + DD_LABEL_R + DD_BG_L + DD_BG_R
+    local w = dd:GetWidth()
+    for _, item in ipairs(items) do
+        list.measure:SetText(item.text)
+        local need = list.measure:GetStringWidth() + chrome
+        if need > w then w = need end
+    end
+    w = math.min(math.ceil(w), DD_MAX_W)
+
+    for i, item in ipairs(items) do
+        local row = GetDropdownRow(list, i)
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", DD_BG_L, -(DD_BG_T + (i - 1) * DD_ROW_H))
+        row:SetWidth(w - DD_BG_L - DD_BG_R)
+        row.label:SetText(item.text)
+        row.onClick = item.func
+        if item.checked then row.check:Show() else row.check:Hide() end
+        row:Show()
+    end
+    for i = #items + 1, #list.rows do
+        list.rows[i]:Hide()
+    end
+
+    list:SetWidth(w)
+    list:SetHeight(DD_BG_T + math.max(#items, 1) * DD_ROW_H + DD_BG_B)
+    list:ClearAllPoints()
+    list:SetPoint("TOPLEFT", dd, "BOTTOMLEFT", 0, -2)
+    list.owner = dd
+    list:Show()
+    ddBlocker:Show()
+end
+
+-- Retail-style dropdown: the CommonDropdown2x pill as the closed-state
+-- button, opening a fully custom list (above) instead of Blizzard's
+-- UIDropDownMenu — that frame's own art can't be swapped from under it,
+-- so this doesn't reskin it, it replaces it outright. `width` sets the
+-- pill's (and the popup list's) width; the caller assigns `dd.itemsFn`
+-- (a function returning an array of {text, checked, func}) and positions
+-- `dd` like any other widget — no template, no global name required.
+local function MakeDropdown(parent, width)
+    local dd = CreateFrame("Frame", nil, parent)
+    dd:SetSize(width, 26)
+
+    local ShowState = BuildDropdownPill(dd)
+
+    local text = dd:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    text:SetPoint("LEFT", 14, 1)
+    text:SetPoint("RIGHT", -20, 1)
+    text:SetJustifyH("LEFT")
+    dd.text = text
+    dd.SetText = function(self, t) self.text:SetText(t or "") end
+
+    local click = CreateFrame("Button", nil, dd)
+    click:SetAllPoints(dd)
+    click.enabled = true
+    click:SetScript("OnEnter", function(self)
+        if self.enabled then ShowState("hover") end
+    end)
+    click:SetScript("OnLeave", function(self)
+        if self.enabled then ShowState("normal") end
+    end)
+    click:SetScript("OnMouseDown", function(self)
+        if self.enabled then ShowState("pressed") end
+    end)
+    click:SetScript("OnMouseUp", function(self)
+        if not self.enabled then return end
+        ShowState(self:IsMouseOver() and "hover" or "normal")
+    end)
+    click:SetScript("OnClick", function()
+        if not click.enabled then return end
+        if ddList and ddList:IsShown() and ddList.owner == dd then
+            HideDropdownList()
+        else
+            OpenDropdownList(dd)
+        end
+    end)
+    dd.click = click
+
+    return dd
+end
+
+-- Retail-style minimal scrollbar (minimal-scrollbar-small atlas kit) for
+-- UIPanelScrollFrameTemplate scrollbars, which are fully named. Stock
+-- art is hidden; the arrows get atlas normal/over/down overlays swapped
+-- by scripts; the engine-driven thumb keeps its behavior but wears the
+-- atlas middle with cap textures over its ends (thumb over/down states
+-- exist in the kit but the thumb is a texture, not a button — no mouse
+-- scripts, so it stays in the normal state); a three-piece track sits
+-- behind it.
+local function SkinMinimalScrollbar(scroll)
+    local sb = _G[scroll:GetName() .. "ScrollBar"]
+    if not sb then return end
+    local sbName = sb:GetName()
+    local thumb = sb.GetThumbTexture and sb:GetThumbTexture()
+                  or _G[sbName .. "ThumbTexture"]
+
+    -- Hide the stock track art ($parentTop/Middle/Bottom regions).
+    for i = 1, sb:GetNumRegions() do
+        local r = select(i, sb:GetRegions())
+        if r and r:IsObjectType("Texture") and r ~= thumb then r:Hide() end
+    end
+
+    local function Arrow(btnName, base)
+        local btn = _G[sbName .. btnName]
+        if not btn then return end
+        for _, getter in ipairs({ "GetNormalTexture", "GetPushedTexture",
+                                  "GetHighlightTexture", "GetDisabledTexture" }) do
+            local t = btn[getter](btn)
+            if t then t:SetAlpha(0) end
+        end
+        local function overlay(atlas)
+            local t = btn:CreateTexture(nil, "OVERLAY")
+            ApplyAtlas(t, atlas)
+            t:SetSize(17, 11)
+            t:SetPoint("CENTER", 0, 0)
+            t:Hide()
+            return t
+        end
+        local up, over, down = overlay(base), overlay(base .. "-over"), overlay(base .. "-down")
+        local pressed = false
+        local function Refresh()
+            up:Hide() over:Hide() down:Hide()
+            if pressed then down:Show()
+            elseif btn:IsMouseOver() then over:Show()
+            else up:Show() end
+        end
+        btn:HookScript("OnEnter", Refresh)
+        btn:HookScript("OnLeave", function() pressed = false Refresh() end)
+        btn:HookScript("OnMouseDown", function() pressed = true Refresh() end)
+        btn:HookScript("OnMouseUp", function() pressed = false Refresh() end)
+        Refresh()
+    end
+    Arrow("ScrollUpButton", "minimal-scrollbar-small-arrow-top")
+    Arrow("ScrollDownButton", "minimal-scrollbar-small-arrow-bottom")
+
+    -- Track behind the thumb, spanning between the two arrows.
+    local trackTop = sb:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlas(trackTop, "minimal-scrollbar-small-track-top")
+    trackTop:SetSize(8, 8)
+    trackTop:SetPoint("TOP", 0, -12)
+    local trackBot = sb:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlas(trackBot, "minimal-scrollbar-small-track-bottom")
+    trackBot:SetSize(8, 8)
+    trackBot:SetPoint("BOTTOM", 0, 12)
+    local trackMid = sb:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlas(trackMid, "!minimal-scrollbar-small-track-middle")
+    trackMid:SetWidth(8)
+    trackMid:SetPoint("TOP", trackTop, "BOTTOM", 0, 0)
+    trackMid:SetPoint("BOTTOM", trackBot, "TOP", 0, 0)
+
+    if thumb then
+        ApplyAtlas(thumb, "minimal-scrollbar-small-thumb-middle")
+        thumb:SetWidth(8)
+        local capTop = sb:CreateTexture(nil, "OVERLAY")
+        ApplyAtlas(capTop, "minimal-scrollbar-small-thumb-top")
+        capTop:SetSize(8, 8)
+        capTop:SetPoint("CENTER", thumb, "TOP", 0, 0)
+        local capBot = sb:CreateTexture(nil, "OVERLAY")
+        ApplyAtlas(capBot, "minimal-scrollbar-small-thumb-bottom")
+        capBot:SetSize(8, 8)
+        capBot:SetPoint("CENTER", thumb, "BOTTOM", 0, 0)
+        -- The engine hides the thumb when the content fits; the caps
+        -- anchored to it must follow (textures have no OnHide script).
+        sb:HookScript("OnUpdate", function()
+            local show = thumb:IsShown() and true or false
+            if (capTop:IsShown() and true or false) ~= show then
+                if show then capTop:Show() capBot:Show()
+                else capTop:Hide() capBot:Hide() end
+            end
+        end)
+    end
+end
+
+-- Three-slice input-field border from the common-search atlas (16x40 caps
+-- around a tiling middle), drawn as BACKGROUND textures filling `frame`.
+-- capW scales the 16px cap to the field's height. Returns the {left, right,
+-- mid} list so callers can tint it (gold on focus). Shared by MakeEdit
+-- (numeric fields) and MakeSearchBox.
+local function ApplySearchBorder(frame, height, capW)
+    local left = frame:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlas(left, "common-search-border-left")
+    left:SetSize(capW, height)
+    left:SetPoint("TOPLEFT", 0, 0)
+    left:SetPoint("BOTTOMLEFT", 0, 0)
+
+    local right = frame:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlas(right, "common-search-border-right")
+    right:SetSize(capW, height)
+    right:SetPoint("TOPRIGHT", 0, 0)
+    right:SetPoint("BOTTOMRIGHT", 0, 0)
+
+    local mid = frame:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlas(mid, "common-search-border-middle")
     mid:SetPoint("TOPLEFT", left, "TOPRIGHT", 0, 0)
     mid:SetPoint("BOTTOMRIGHT", right, "BOTTOMLEFT", 0, 0)
 
+    return { left, right, mid }
+end
+
+-- Edit box wearing the common-search border art (same kit as the sidebar
+-- search, minus the glyph/clear button). Border tints gold on focus.
+-- With get/set (numeric): commits on Enter / focus lost, reverts on
+-- Escape. Without: plain text field, read via GetText().
+local EDIT_H = 22
+local EDIT_CAP = 9 -- 16px cap scaled from the atlas's 40px native height
+local function MakeEdit(parent, w, get, set)
+    local eb = CreateFrame("EditBox", nil, parent)
+    eb:SetWidth(w)
+    eb:SetHeight(EDIT_H)
+    eb:SetAutoFocus(false)
+    eb:SetFontObject(ChatFontNormal)
+    eb:SetTextInsets(8, 8, 0, 0)
+
+    local border = ApplySearchBorder(eb, EDIT_H, EDIT_CAP)
+
     eb:SetScript("OnEditFocusGained", function(self)
-        for _, t in ipairs(slices) do
+        for _, t in ipairs(border) do
             t:SetVertexColor(ACCENT[1], ACCENT[2], ACCENT[3])
         end
         self:HighlightText()
@@ -260,7 +761,7 @@ local function MakeEdit(parent, w, get, set)
         self:ClearFocus()
     end)
     eb:SetScript("OnEditFocusLost", function(self)
-        for _, t in ipairs(slices) do t:SetVertexColor(1, 1, 1) end
+        for _, t in ipairs(border) do t:SetVertexColor(1, 1, 1) end
         self:HighlightText(0, 0)
         if get and set then
             if not self.reverting then
@@ -277,11 +778,84 @@ local function MakeEdit(parent, w, get, set)
     return eb
 end
 
--- Stock options slider (OptionsSliderTemplate's thumb + track art). Needs a
--- global name — the template's Low/High/Text labels are $parent-relative
--- and only resolve with one; every caller must pass a unique name. Low/High/
--- Text go blank (the row already carries its own label) and the live value
--- reads instead in a small fontstring to the slider's right.
+-- Search box wearing the common-search atlas kit: left/right caps (16x40
+-- native) around a tiling middle, a magnifying-glass glyph pinned at the
+-- left and a clear button at the right that appears only while there's
+-- text. The border tints gold on focus like MakeEdit. Returns the EditBox
+-- (so SetText/GetText/ClearFocus work directly); the caller wires its own
+-- OnTextChanged via HookScript for the actual filtering. The internal
+-- affordance/focus handlers are all HookScript too, so caller and widget
+-- coexist without either clobbering the other's OnTextChanged.
+local SEARCH_H = 26
+local SEARCH_CAP = 10 -- 16px cap scaled from the atlas's 40px native height
+local function MakeSearchBox(parent, width)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetSize(width, SEARCH_H)
+
+    local border = ApplySearchBorder(container, SEARCH_H, SEARCH_CAP)
+
+    local icon = container:CreateTexture(nil, "OVERLAY")
+    ApplyAtlas(icon, "common-search-magnifyingglass")
+    icon:SetSize(16, 16)
+    icon:SetPoint("LEFT", 8, 0)
+
+    local clear = CreateFrame("Button", nil, container)
+    clear:SetSize(13, 13)
+    clear:SetPoint("RIGHT", -(SEARCH_CAP - 1), 0)
+    local clearTex = clear:CreateTexture(nil, "OVERLAY")
+    ApplyAtlas(clearTex, "common-search-clearbutton")
+    clearTex:SetAllPoints()
+    clear:Hide()
+
+    local eb = CreateFrame("EditBox", nil, container)
+    eb:SetAutoFocus(false)
+    eb:SetFontObject(ChatFontNormal)
+    eb:SetTextInsets(2, 2, 0, 0)
+    eb:SetHeight(SEARCH_H)
+    eb:SetPoint("LEFT", icon, "RIGHT", 4, 0)
+    eb:SetPoint("RIGHT", clear, "LEFT", -3, 0)
+
+    local placeholder = eb:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+    placeholder:SetPoint("LEFT", 2, 0)
+    placeholder:SetText("Search")
+
+    local function UpdateAffordances()
+        local has = (eb:GetText() or "") ~= ""
+        if has then clear:Show() else clear:Hide() end
+        if has or eb:HasFocus() then placeholder:Hide() else placeholder:Show() end
+    end
+
+    clear:SetScript("OnClick", function()
+        eb:SetText("")
+        eb:SetFocus()
+    end)
+
+    eb:HookScript("OnTextChanged", UpdateAffordances)
+    eb:HookScript("OnEditFocusGained", function()
+        for _, t in ipairs(border) do
+            t:SetVertexColor(ACCENT[1], ACCENT[2], ACCENT[3])
+        end
+        UpdateAffordances()
+    end)
+    eb:HookScript("OnEditFocusLost", function()
+        for _, t in ipairs(border) do t:SetVertexColor(1, 1, 1) end
+        UpdateAffordances()
+    end)
+    eb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+
+    eb.container = container
+    return eb
+end
+
+-- Options slider wearing the MinimalSliderBar atlas kit (Left + tiling
+-- _Middle + Right track, Button thumb) instead of OptionsSliderTemplate's
+-- stock art; the template still supplies behavior, so the engine keeps
+-- driving the thumb. Needs a global name — the template's Low/High/Text
+-- labels are $parent-relative and only resolve with one; every caller
+-- must pass a unique name. Low/High/Text go blank (the row already
+-- carries its own label) and the live value reads instead in a small
+-- fontstring to the slider's right.
 -- get/set still deal in the widget's own min..max units; displayBase (optional)
 -- only rescales the readout — passing the value that should read "1.00" makes
 -- that the visible "default size" mark without moving where it sits physically
@@ -296,6 +870,31 @@ local function MakeSlider(parent, name, w, minV, maxV, step, get, set, displayBa
     _G[name .. "Low"]:SetText("")
     _G[name .. "High"]:SetText("")
     _G[name .. "Text"]:SetText("")
+
+    -- MinimalSliderBar art: hide the stock track regions, re-lay the
+    -- three-piece track, and re-skin the engine thumb.
+    local thumb = s.GetThumbTexture and s:GetThumbTexture()
+    for i = 1, s:GetNumRegions() do
+        local r = select(i, s:GetRegions())
+        if r:IsObjectType("Texture") and r ~= thumb then r:Hide() end
+    end
+    local trackL = s:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlas(trackL, "Minimal_SliderBar_Left")
+    trackL:SetSize(11, 17)
+    trackL:SetPoint("LEFT", 0, 0)
+    local trackR = s:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlas(trackR, "Minimal_SliderBar_Right")
+    trackR:SetSize(11, 17)
+    trackR:SetPoint("RIGHT", 0, 0)
+    local trackM = s:CreateTexture(nil, "BACKGROUND")
+    ApplyAtlas(trackM, "_Minimal_SliderBar_Middle")
+    trackM:SetHeight(17)
+    trackM:SetPoint("LEFT", trackL, "RIGHT", 0, 0)
+    trackM:SetPoint("RIGHT", trackR, "LEFT", 0, 0)
+    if thumb then
+        ApplyAtlas(thumb, "Minimal_SliderBar_Button")
+        thumb:SetSize(20, 19)
+    end
 
     local valueText = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     valueText:SetPoint("LEFT", s, "RIGHT", 10, 0)
@@ -377,6 +976,7 @@ local function UpdateFooter()
 end
 
 local function SelectPage(key)
+    HideDropdownList() -- an open dropdown belongs to the page being left
     currentKey = key
     for k, p in pairs(pages) do
         if k == key then p:Show() else p:Hide() end
@@ -515,62 +1115,6 @@ end
 -- the weight grid, custom stats)
 --------------------------------------------------------------------------
 
--- Naming dialogs for the profile controls. Native StaticPopups: Enter
--- accepts, Escape cancels, and they sit above the config window.
-StaticPopupDialogs["REFACTORUI_SAVEAS_PROFILE"] = {
-    text = "Save current weights as:",
-    button1 = ACCEPT,
-    button2 = CANCEL,
-    hasEditBox = 1,
-    maxLetters = 48,
-    OnShow = function(self)
-        _G[self:GetName() .. "EditBox"]:SetText("")
-    end,
-    OnAccept = function(self)
-        local name = (_G[self:GetName() .. "EditBox"]:GetText() or "")
-            :match("^%s*(.-)%s*$")
-        if name ~= "" then
-            CS().SaveProfileAs(name)
-            RefreshBags()
-        end
-    end,
-    EditBoxOnEnterPressed = function(self)
-        local dialog = self:GetParent()
-        StaticPopupDialogs["REFACTORUI_SAVEAS_PROFILE"].OnAccept(dialog)
-        dialog:Hide()
-    end,
-    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
-    timeout = 0, whileDead = 1, hideOnEscape = 1,
-}
-
-StaticPopupDialogs["REFACTORUI_RENAME_PROFILE"] = {
-    text = "Rename profile '%s' to:",
-    button1 = ACCEPT,
-    button2 = CANCEL,
-    hasEditBox = 1,
-    maxLetters = 48,
-    OnShow = function(self)
-        local eb = _G[self:GetName() .. "EditBox"]
-        eb:SetText(self.data or "")
-        eb:HighlightText()
-    end,
-    OnAccept = function(self)
-        local name = (_G[self:GetName() .. "EditBox"]:GetText() or "")
-            :match("^%s*(.-)%s*$")
-        local s = CS()
-        if name ~= "" and s and s.RenameProfile then
-            s.RenameProfile(self.data, name)
-        end
-    end,
-    EditBoxOnEnterPressed = function(self)
-        local dialog = self:GetParent()
-        StaticPopupDialogs["REFACTORUI_RENAME_PROFILE"].OnAccept(dialog)
-        dialog:Hide()
-    end,
-    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
-    timeout = 0, whileDead = 1, hideOnEscape = 1,
-}
-
 local function BuildWeightsPage()
     local p = NewPage("weights")
     p.blurb = "Profiles, per-spec default weights, and the per-stat numbers " ..
@@ -585,6 +1129,7 @@ local function BuildWeightsPage()
         local sb = _G[self:GetName() .. "ScrollBar"]
         if sb then sb:SetValue(sb:GetValue() - delta * 40) end
     end)
+    SkinMinimalScrollbar(scroll)
 
     local INNER_W = CONTENT_W - 26
     local child = CreateFrame("Frame", nil, scroll)
@@ -604,37 +1149,47 @@ local function BuildWeightsPage()
         "Each character remembers which one it picked.", 0, y, INNER_W)
     y = y - 30
 
-    local dd = CreateFrame("Frame", "RefactorUIProfileDropdown", child,
-        "UIDropDownMenuTemplate")
-    dd:SetPoint("TOPLEFT", -14, y + 4) -- template art carries ~16px side pads
-    UIDropDownMenu_SetWidth(dd, 200)
-    UIDropDownMenu_Initialize(dd, function()
+    local dd = MakeDropdown(child, 200)
+    dd:SetPoint("TOPLEFT", 0, y)
+    dd.itemsFn = function()
         local d = DB()
-        if not d then return end
+        if not d then return {} end
         local names = {}
         for n in pairs(d.profiles) do tinsert(names, n) end
         table.sort(names)
+        local items = {}
         for _, n in ipairs(names) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.text = n
-            info.checked = (d.activeProfile == n)
-            info.func = function()
-                shared.SetActiveProfile(n)
-                RefreshBags()
-                Print("switched to profile '" .. n .. "'.")
-                RefactorUI.Refresh()
-            end
-            UIDropDownMenu_AddButton(info)
+            tinsert(items, {
+                text = n,
+                checked = (d.activeProfile == n),
+                func = function()
+                    shared.SetActiveProfile(n)
+                    RefreshBags()
+                    Print("switched to profile '" .. n .. "'.")
+                    RefactorUI.Refresh()
+                end,
+            })
         end
-    end)
+        return items
+    end
     dd.Refresh = function(self)
-        UIDropDownMenu_SetText(self, DB().activeProfile or "")
+        self:SetText(DB().activeProfile or "")
     end
     p:Track(dd)
     y = y - 34
 
     local saveAsBtn = MakeButton(child, 96, 22, "Save as...", function()
-        StaticPopup_Show("REFACTORUI_SAVEAS_PROFILE")
+        ShowPopup({
+            text = "Save current weights as:",
+            hasEditBox = true,
+            onAccept = function(name)
+                name = (name or ""):match("^%s*(.-)%s*$")
+                if name ~= "" then
+                    CS().SaveProfileAs(name)
+                    RefreshBags()
+                end
+            end,
+        })
     end)
     saveAsBtn:SetPoint("TOPLEFT", 2, y)
     Explain(saveAsBtn, "Save as",
@@ -642,9 +1197,20 @@ local function BuildWeightsPage()
         "Reusing an existing name overwrites that profile.")
 
     local renameBtn = MakeButton(child, 92, 22, "Rename...", function()
-        local d = DB()
-        local dialog = StaticPopup_Show("REFACTORUI_RENAME_PROFILE", d.activeProfile)
-        if dialog then dialog.data = d.activeProfile end
+        local current = DB().activeProfile
+        ShowPopup({
+            text = string.format("Rename profile '%s' to:", current),
+            hasEditBox = true,
+            editDefault = current,
+            editHighlight = true,
+            onAccept = function(name)
+                name = (name or ""):match("^%s*(.-)%s*$")
+                local s = CS()
+                if name ~= "" and s and s.RenameProfile then
+                    s.RenameProfile(current, name)
+                end
+            end,
+        })
     end)
     renameBtn:SetPoint("TOPLEFT", 104, y)
     renameBtn.Refresh = function(self)
@@ -657,9 +1223,14 @@ local function BuildWeightsPage()
         "(auto-selection finds those by name); copy them with Save as instead.")
 
     local deleteBtn = MakeButton(child, 80, 22, "Delete", function()
-        local d = DB()
-        local dialog = StaticPopup_Show("REFACTORCOMPARE_DELETE_PROFILE", d.activeProfile)
-        if dialog then dialog.data = d.activeProfile end
+        local name = DB().activeProfile
+        ShowPopup({
+            text = string.format("Delete profile '%s'?", name),
+            button1 = YES, button2 = NO,
+            onAccept = function()
+                CS().DeleteProfile(name)
+            end,
+        })
     end)
     deleteBtn:SetPoint("TOPLEFT", 202, y)
     deleteBtn.Refresh = function(self)
@@ -681,19 +1252,16 @@ local function BuildWeightsPage()
         "profile's — for gearing two roles at the same time.", 0, y, INNER_W)
     y = y - 30
 
-    local secDD = CreateFrame("Frame", "RefactorUISecondaryDropdown", child,
-        "UIDropDownMenuTemplate")
-    secDD:SetPoint("TOPLEFT", -14, y + 4) -- same template art padding as above
-    UIDropDownMenu_SetWidth(secDD, 200)
-    UIDropDownMenu_Initialize(secDD, function()
+    local secDD = MakeDropdown(child, 200)
+    secDD:SetPoint("TOPLEFT", 0, y)
+    secDD.itemsFn = function()
         local d = DB()
-        if not d then return end
+        if not d then return {} end
         local cur = shared.SecondaryProfileName and shared.SecondaryProfileName()
-        local none = UIDropDownMenu_CreateInfo()
-        none.text = "None"
-        none.checked = (cur == nil)
-        none.func = function() shared.SetSecondaryProfile(nil) end
-        UIDropDownMenu_AddButton(none)
+        local items = {
+            { text = "None", checked = (cur == nil),
+              func = function() shared.SetSecondaryProfile(nil) end },
+        }
         local names = {}
         for n in pairs(d.profiles) do tinsert(names, n) end
         table.sort(names)
@@ -701,20 +1269,21 @@ local function BuildWeightsPage()
             -- The active profile is excluded: its verdict is already the
             -- primary one, doubling it would be noise.
             if n ~= d.activeProfile then
-                local info = UIDropDownMenu_CreateInfo()
-                info.text = n
-                info.checked = (cur == n)
-                info.func = function() shared.SetSecondaryProfile(n) end
-                UIDropDownMenu_AddButton(info)
+                tinsert(items, {
+                    text = n,
+                    checked = (cur == n),
+                    func = function() shared.SetSecondaryProfile(n) end,
+                })
             end
         end
-    end)
+        return items
+    end
     secDD.Refresh = function(self)
         local cur = shared.SecondaryProfileName and shared.SecondaryProfileName()
-        UIDropDownMenu_SetText(self, cur or "None")
+        self:SetText(cur or "None")
     end
     p:Track(secDD)
-    Explain(secDD, "Secondary verdict",
+    Explain(secDD.click, "Secondary verdict",
         "Picks a second profile whose upgrade verdict appears in blue alongside " ..
         "the active profile's green/red one — on item tooltips (its own line) " ..
         "and bag arrows (blue arrow, top-left corner). Blue arrow = upgrade for " ..
@@ -836,10 +1405,31 @@ local function BuildWeightsPage()
     y = y - ROWS * 26 - 10
 
     -- Custom scanned stats ---------------------------------------------------
+    local customSectionTop = y
     y = Section(child, "Custom scanned stats", 0, y, INNER_W)
     SmallText(child,
         "Ascension-only stats picked up while scanning score at the Unknown weight " ..
         "until you give them their own value here.", 0, y, INNER_W)
+
+    local customInfoBtn = CreateFrame("Frame", nil, child)
+    customInfoBtn:SetWidth(20)
+    customInfoBtn:SetHeight(14)
+    customInfoBtn:SetPoint("TOPLEFT", 165, customSectionTop - 3)
+    customInfoBtn:EnableMouse(true)
+    local customInfoText = customInfoBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    customInfoText:SetPoint("CENTER", 0, 0)
+    customInfoText:SetText("(?)")
+    Explain(customInfoBtn, "Adding a custom stat weight",
+        "1. Hover the item and read the line exactly as it appears on the tooltip " ..
+        "(e.g. \"Vampirism\" or \"Fire Resistance\"). Case doesn't matter.\n" ..
+        "2. Type that wording into the box below, set a weight, click Add.\n" ..
+        "3. Any item carrying that line now scores it at your weight instead of Unknown.\n\n" ..
+        "|cff9999ffPercent effects (meta gem halves, \"3% Increased Critical Damage\", " ..
+        "percent Equip: lines) show up under a \"<name> %\" entry — add that exact name " ..
+        "including the trailing %.|r\n\n" ..
+        "|cff999999Same thing from chat: /rfc weight <stat name> <value>. Weight 0 makes " ..
+        "the addon ignore the stat entirely.|r")
+
     y = y - 34
     local customStartY = y
 
@@ -1007,30 +1597,30 @@ local function BuildLootPage()
 
         -- Sources are re-discovered every time the menu opens, so a TSM or
         -- Auctionator install/removal is picked up without a /reload.
-        local dd = CreateFrame("Frame", "RefactorUIPriceSourceDropdown", p,
-            "UIDropDownMenuTemplate")
-        dd:SetPoint("TOPLEFT", 96, y + 4) -- template art carries ~16px side pads
-        UIDropDownMenu_SetWidth(dd, 190)
-        UIDropDownMenu_Initialize(dd, function()
+        local dd = MakeDropdown(p, 190)
+        dd:SetPoint("TOPLEFT", 96, y)
+        dd.itemsFn = function()
             local ts = RefactorToastShared
             local t = TDB()
-            if not (ts and ts.GetPriceSources and t) then return end
+            if not (ts and ts.GetPriceSources and t) then return {} end
+            local items = {}
             for _, src in ipairs(ts.GetPriceSources()) do
-                local info = UIDropDownMenu_CreateInfo()
-                info.text = src.label
-                info.checked = (t.priceSource == src.key)
-                info.func = function()
-                    t.priceSource = src.key
-                    RefactorUI.Refresh()
-                end
-                UIDropDownMenu_AddButton(info)
+                tinsert(items, {
+                    text = src.label,
+                    checked = (t.priceSource == src.key),
+                    func = function()
+                        t.priceSource = src.key
+                        RefactorUI.Refresh()
+                    end,
+                })
             end
-        end)
+            return items
+        end
         dd.Refresh = function(self)
             local ts = RefactorToastShared
             local t = TDB()
             if not (ts and ts.GetPriceSources and t) then
-                UIDropDownMenu_SetText(self, "")
+                self:SetText("")
                 return
             end
             -- A saved source whose addon is gone still shows its raw key, so
@@ -1042,7 +1632,7 @@ local function BuildLootPage()
                     break
                 end
             end
-            UIDropDownMenu_SetText(self, text)
+            self:SetText(text)
         end
         p:Track(dd)
         local desc = "Where the value comes from — auction house prices only. " ..
@@ -1051,7 +1641,7 @@ local function BuildLootPage()
             "house; when the source knows nothing, the toast shows no value. " ..
             "Vendor sell price is never shown — addons can only read the base " ..
             "item's price, which contradicts the scaled Sell Price in the tooltip."
-        Explain(dd, "Price source", desc)
+        Explain(dd.click, "Price source", desc)
         RegisterOption("Price source", desc, p.pageKey)
     end
     y = y - 34
@@ -1096,29 +1686,6 @@ end
 -- Page: Tweaks (the QoL features from Refactor.lua)
 --------------------------------------------------------------------------
 
--- Both destructive (overwrite every individual QoL choice), so they stay popups.
-StaticPopupDialogs["REFACTORUI_RESET_QOL"] = {
-    text = "Restore all QoL tweaks to their defaults?",
-    button1 = YES,
-    button2 = NO,
-    OnAccept = function()
-        if RefactorQoL then RefactorQoL.ResetDefaults() end
-        RefactorUI.Refresh()
-    end,
-    timeout = 0, whileDead = 1, hideOnEscape = 1,
-}
-
-StaticPopupDialogs["REFACTORUI_DISABLE_ALL_QOL"] = {
-    text = "Turn off every QoL tweak? You can then opt back into the ones you want, one at a time.",
-    button1 = YES,
-    button2 = NO,
-    OnAccept = function()
-        if RefactorQoL then RefactorQoL.DisableAll() end
-        RefactorUI.Refresh()
-    end,
-    timeout = 0, whileDead = 1, hideOnEscape = 1,
-}
-
 local function BuildTweaksPage()
     local p = NewPage("tweaks")
     p.blurb = "Quality-of-life switches: looting, questing, the world map, " ..
@@ -1136,6 +1703,7 @@ local function BuildTweaksPage()
         local sb = _G[self:GetName() .. "ScrollBar"]
         if sb then sb:SetValue(sb:GetValue() - delta * 40) end
     end)
+    SkinMinimalScrollbar(scroll)
 
     local INNER_W = CONTENT_W - 26
     local child = CreateFrame("Frame", nil, scroll)
@@ -1156,7 +1724,14 @@ local function BuildTweaksPage()
     end
 
     local disableAllBtn = MakeButton(child, 130, 22, "Disable all", function()
-        StaticPopup_Show("REFACTORUI_DISABLE_ALL_QOL")
+        ShowPopup({
+            text = "Turn off every QoL tweak? You can then opt back into the ones you want, one at a time.",
+            button1 = YES, button2 = NO,
+            onAccept = function()
+                if RefactorQoL then RefactorQoL.DisableAll() end
+                RefactorUI.Refresh()
+            end,
+        })
     end)
     disableAllBtn:SetPoint("TOPLEFT", 0, 0)
     p:Track(disableAllBtn)
@@ -1167,7 +1742,14 @@ local function BuildTweaksPage()
         "toasts and the CC alert live on their own pages and aren't affected.")
 
     local resetBtn = MakeButton(child, 130, 22, "Restore defaults", function()
-        StaticPopup_Show("REFACTORUI_RESET_QOL")
+        ShowPopup({
+            text = "Restore all QoL tweaks to their defaults?",
+            button1 = YES, button2 = NO,
+            onAccept = function()
+                if RefactorQoL then RefactorQoL.ResetDefaults() end
+                RefactorUI.Refresh()
+            end,
+        })
     end)
     resetBtn:SetPoint("TOPLEFT", 140, 0)
     p:Track(resetBtn)
@@ -1535,6 +2117,166 @@ end
 -- Window construction
 --------------------------------------------------------------------------
 
+-- The DiamondMetal atlas set (corners + tiling edges) drawn as eight
+-- OVERLAY textures around the frame.
+local function BuildMetalBorder(f)
+    local S = BORDER_SIZE
+    local function piece(atlas)
+        local t = f:CreateTexture(nil, "OVERLAY")
+        ApplyAtlas(t, atlas)
+        return t
+    end
+
+    local tl = piece("UI-Frame-DiamondMetal-CornerTopLeft-8x")
+    tl:SetSize(S, S)
+    tl:SetPoint("TOPLEFT", 0, 0)
+
+    local tr = piece("UI-Frame-DiamondMetal-CornerTopRight-8x")
+    tr:SetSize(S, S)
+    tr:SetPoint("TOPRIGHT", 0, 0)
+
+    local bl = piece("UI-Frame-DiamondMetal-CornerBottomLeft-8x")
+    bl:SetSize(S, S)
+    bl:SetPoint("BOTTOMLEFT", 0, 0)
+
+    local br = piece("UI-Frame-DiamondMetal-CornerBottomRight-8x")
+    br:SetSize(S, S)
+    br:SetPoint("BOTTOMRIGHT", 0, 0)
+
+    local top = piece("_UI-Frame-DiamondMetal-EdgeTop-8x")
+    top:SetHeight(S)
+    top:SetPoint("TOPLEFT", S, 0)
+    top:SetPoint("TOPRIGHT", -S, 0)
+
+    local bot = piece("_UI-Frame-DiamondMetal-EdgeBottom-8x")
+    bot:SetHeight(S)
+    bot:SetPoint("BOTTOMLEFT", S, 0)
+    bot:SetPoint("BOTTOMRIGHT", -S, 0)
+
+    local left = piece("!UI-Frame-DiamondMetal-EdgeLeft-8x")
+    left:SetWidth(S)
+    left:SetPoint("TOPLEFT", 0, -S)
+    left:SetPoint("BOTTOMLEFT", 0, S)
+
+    local right = piece("!UI-Frame-DiamondMetal-EdgeRight-8x")
+    right:SetWidth(S)
+    right:SetPoint("TOPRIGHT", 0, -S)
+    right:SetPoint("BOTTOMRIGHT", 0, S)
+end
+
+--------------------------------------------------------------------------
+-- Modal confirm/prompt popup — replaces StaticPopupDialogs so destructive
+-- confirms and profile-naming prompts wear the same DiamondMetal
+-- border/redbutton look as the rest of the window instead of the stock
+-- Blizzard dialog frame. One reusable frame (nothing here stacks).
+--------------------------------------------------------------------------
+local popup
+local POPUP_W = 380
+
+local function BuildPopup()
+    local f = CreateFrame("Frame", "RefactorUIPopup", UIParent)
+    f:SetFrameStrata("FULLSCREEN_DIALOG")
+    f:SetToplevel(true)
+    f:EnableMouse(true)
+    f:SetClampedToScreen(true)
+    f:SetWidth(POPUP_W)
+    f:SetPoint("CENTER", 0, 80)
+    f:Hide()
+
+    local bg = f:CreateTexture(nil, "BACKGROUND")
+    bg:SetTexture(0.10, 0.09, 0.08, 0.55)
+    bg:SetPoint("TOPLEFT", 8, -8)
+    bg:SetPoint("BOTTOMRIGHT", -8, 8)
+    BuildMetalBorder(f)
+    local wash = f:CreateTexture(nil, "BACKGROUND")
+    wash:SetTexture(0.09, 0.07, 0.05, 0.4)
+    wash:SetPoint("TOPLEFT", 5, -5)
+    wash:SetPoint("BOTTOMRIGHT", -5, 5)
+
+    local text = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    text:SetWidth(POPUP_W - (BORDER_SIZE + 16) * 2)
+    text:SetJustifyH("CENTER")
+    f.text = text
+
+    local edit = MakeEdit(f, 220)
+    f.edit = edit
+
+    local btn1 = MakeButton(f, 120, 26, ACCEPT, function()
+        local val = f.edit:IsShown() and f.edit:GetText() or nil
+        local onAccept = f.onAccept
+        f:Hide()
+        if onAccept then onAccept(val) end
+    end)
+    local btn2 = MakeButton(f, 120, 26, CANCEL, function()
+        local onCancel = f.onCancel
+        f:Hide()
+        if onCancel then onCancel() end
+    end)
+    f.btn1, f.btn2 = btn1, btn2
+
+    f:SetScript("OnHide", function(self)
+        self.edit:ClearFocus()
+        self.onAccept, self.onCancel = nil, nil
+    end)
+
+    tinsert(UISpecialFrames, "RefactorUIPopup") -- Escape closes
+    popup = f
+    return f
+end
+
+-- opts: text, hasEditBox, editDefault, editHighlight, button1, button2,
+-- onAccept(editText|nil), onCancel
+ShowPopup = function(opts)
+    local f = popup or BuildPopup()
+
+    f.text:SetText(opts.text)
+    f.onAccept = opts.onAccept
+    f.onCancel = opts.onCancel
+    f.btn1.text:SetText(opts.button1 or ACCEPT)
+    f.btn2.text:SetText(opts.button2 or CANCEL)
+
+    local y = -(BORDER_SIZE + 16)
+    f.text:ClearAllPoints()
+    f.text:SetPoint("TOP", 0, y)
+    y = y - f.text:GetStringHeight()
+
+    f.edit:ClearAllPoints()
+    if opts.hasEditBox then
+        y = y - 14
+        f.edit:SetPoint("TOP", 0, y)
+        f.edit:Show()
+        f.edit:SetText(opts.editDefault or "")
+        f.edit:SetScript("OnEnterPressed", function(self)
+            local text = self:GetText()
+            self:ClearFocus()
+            local onAccept = f.onAccept
+            f:Hide()
+            if onAccept then onAccept(text) end
+        end)
+        f.edit:SetScript("OnEscapePressed", function(self)
+            self:ClearFocus()
+            f:Hide()
+        end)
+        y = y - EDIT_H - 6 -- edit is TOP-anchored; reserve its full height
+    else
+        f.edit:Hide()
+        y = y - 20
+    end
+
+    f.btn1:ClearAllPoints()
+    f.btn2:ClearAllPoints()
+    f.btn1:SetPoint("TOP", -64, y)
+    f.btn2:SetPoint("TOP", 64, y)
+    y = y - 26 - (BORDER_SIZE + 16)
+
+    f:SetHeight(-y)
+    f:Show()
+    if opts.hasEditBox then
+        f.edit:SetFocus()
+        if opts.editHighlight then f.edit:HighlightText() end
+    end
+end
+
 local function BuildWindow()
     local f = CreateFrame("Frame", "RefactorUIWindow", UIParent)
     f:SetWidth(W_WIDTH)
@@ -1545,29 +2287,27 @@ local function BuildWindow()
     f:EnableMouse(true)
     f:SetMovable(true)
     f:SetClampedToScreen(true)
-    f:SetBackdrop({
-        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-        tile = true, tileSize = 32, edgeSize = 32,
-        insets = { left = INSET, right = INSET, top = INSET, bottom = INSET },
-    })
-    -- The stock dialog background leans blue; a warm multiply tint pulls
-    -- it toward the parchment-brown of the border art.
-    f:SetBackdropColor(1, 0.93, 0.82)
-    -- The dialog art is authored translucent and can't be made more solid
-    -- via the backdrop alone, so an earth-dark wash sits over it (tucked
-    -- inside the border art) to stop the world reading through. Created
-    -- first so every later BACKGROUND texture draws above it.
+    -- Flat dark background as a texture, pulled 8px in from the frame
+    -- rect so the DiamondMetal border rim sits on its own art.
+    local bg = f:CreateTexture(nil, "BACKGROUND")
+    bg:SetTexture(0.10, 0.09, 0.08, 1)
+    bg:SetPoint("TOPLEFT", 8, -8)
+    bg:SetPoint("BOTTOMRIGHT", -8, 8)
+    BuildMetalBorder(f)
+    -- An earth-dark wash sits over the flat background (tucked inside the
+    -- border art) to stop the world reading through. Created first so
+    -- every later BACKGROUND texture draws above it.
     local wash = f:CreateTexture(nil, "BACKGROUND")
     wash:SetTexture(0.09, 0.07, 0.05, 0.8)
     wash:SetPoint("TOPLEFT", 5, -5)
     wash:SetPoint("BOTTOMRIGHT", -5, 5)
     f:Hide()
+    f:HookScript("OnHide", HideDropdownList)
     tinsert(UISpecialFrames, "RefactorUIWindow") -- Escape closes
     window = f
 
-    -- Header: the stock dialog ribbon carries the title; the strip under
-    -- it is the drag handle for the whole window.
+    -- Header: a DiamondMetal-Header band carries the title; the strip
+    -- under it is the drag handle for the whole window.
     local header = CreateFrame("Frame", nil, f)
     header:SetPoint("TOPLEFT", 0, 0)
     header:SetPoint("TOPRIGHT", 0, 0)
@@ -1577,15 +2317,33 @@ local function BuildWindow()
     header:SetScript("OnDragStart", function() f:StartMoving() end)
     header:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
 
-    local ribbon = header:CreateTexture(nil, "ARTWORK")
-    ribbon:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
-    ribbon:SetWidth(256)
-    ribbon:SetHeight(64)
-    ribbon:SetPoint("TOP", f, "TOP", 0, 12)
+    -- Title band: the DiamondMetal-Header kit (corner + tiling middle +
+    -- corner), sized to the title text and riding the top border rim.
+    local bar = CreateFrame("Frame", nil, header)
+    local barH = 28
+    local barCapW = math.floor(barH * 32 / 39 + 0.5) -- keep the corner aspect
+    bar:SetHeight(barH)
 
-    local title = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOP", ribbon, "TOP", 0, -14)
+    local title = bar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("CENTER", 0, 0)
     title:SetText("Refactor")
+    bar:SetWidth(math.floor(title:GetStringWidth() + 0.5) + barCapW * 2 + 8)
+    bar:SetPoint("TOP", f, "TOP", 0, 4)
+
+    local barL = bar:CreateTexture(nil, "ARTWORK")
+    ApplyAtlas(barL, "UI-Frame-DiamondMetal-Header-CornerLeft-2x")
+    barL:SetSize(barCapW, barH)
+    barL:SetPoint("TOPLEFT", 0, 0)
+
+    local barC = bar:CreateTexture(nil, "ARTWORK")
+    ApplyAtlas(barC, "_UI-Frame-DiamondMetal-Header-Tile-2x")
+    barC:SetPoint("TOPLEFT", barCapW, 0)
+    barC:SetPoint("BOTTOMRIGHT", -barCapW, 0)
+
+    local barR = bar:CreateTexture(nil, "ARTWORK")
+    ApplyAtlas(barR, "UI-Frame-DiamondMetal-Header-CornerRight-2x")
+    barR:SetSize(barCapW, barH)
+    barR:SetPoint("TOPRIGHT", 0, 0)
 
     local headerLine = f:CreateTexture(nil, "ARTWORK")
     headerLine:SetTexture(SOLID)
@@ -1596,8 +2354,25 @@ local function BuildWindow()
     headerLine:SetPoint("TOPLEFT", INSET, -HEADER_H)
     headerLine:SetPoint("TOPRIGHT", -INSET, -HEADER_H)
 
-    local close = CreateFrame("Button", nil, header, "UIPanelCloseButton")
-    close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
+    -- Close: the 128-redbutton-exit art (the UIPanelCloseButton template
+    -- needs a global name; this button is anonymous).
+    local close = CreateFrame("Button", nil, header)
+    close:SetWidth(20)
+    close:SetHeight(20)
+    close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6)
+    local closeUp = close:CreateTexture(nil, "ARTWORK")
+    ApplyAtlas(closeUp, "128-redbutton-exit")
+    closeUp:SetAllPoints(close)
+    local closeDown = close:CreateTexture(nil, "ARTWORK")
+    ApplyAtlas(closeDown, "128-redbutton-exit-pressed")
+    closeDown:SetAllPoints(close)
+    closeDown:Hide()
+    local closeHl = close:CreateTexture(nil, "HIGHLIGHT")
+    ApplyAtlas(closeHl, "128-redbutton-refresh-highlight")
+    closeHl:SetAllPoints(close)
+    closeHl:SetBlendMode("ADD")
+    close:SetScript("OnMouseDown", function() closeDown:Show() end)
+    close:SetScript("OnMouseUp", function() closeDown:Hide() end)
     close:SetScript("OnClick", function() f:Hide() end)
 
     -- Sidebar --------------------------------------------------------------
@@ -1618,17 +2393,13 @@ local function BuildWindow()
 
     -- Sidebar search: type to filter every registered option, results as
     -- a jump list on the (nav-less) Search page. Clearing returns home.
-    local searchBox = MakeEdit(f, SIDEBAR_W - 28)
-    searchBox:SetPoint("TOPLEFT", INSET + 16, -(HEADER_H + 14))
+    -- MakeSearchBox owns the placeholder, magnifying glass, clear button
+    -- and focus tint; this only adds the filtering (HookScript, so it runs
+    -- alongside the widget's own OnTextChanged rather than replacing it).
+    local searchBox = MakeSearchBox(f, SIDEBAR_W - 24)
+    searchBox.container:SetPoint("TOPLEFT", INSET + 12, -(HEADER_H + 12))
     f.searchBox = searchBox
-    local placeholder = searchBox:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-    placeholder:SetPoint("LEFT", 2, 0)
-    placeholder:SetText("Search")
-    searchBox:HookScript("OnEditFocusGained", function() placeholder:Hide() end)
-    searchBox:HookScript("OnEditFocusLost", function(self)
-        if (self:GetText() or "") == "" then placeholder:Show() end
-    end)
-    searchBox:SetScript("OnTextChanged", function(self)
+    searchBox:HookScript("OnTextChanged", function(self)
         if f.suppressSearch then return end
         local q = (self:GetText() or ""):match("^%s*(.-)%s*$")
         if q ~= "" then

@@ -555,6 +555,8 @@ local function InitRefactorMap()
         end
     end
 
+    local mapUpdateAccum = 0
+    local mapIconSyncAccum = 0
     local function WorldMapButton_OnUpdate(self, elapsed)
         if not Qol("mapZoom") and not Qol("mapClassIcons") then return end
 
@@ -562,8 +564,21 @@ local function InitRefactorMap()
             WorldMapScrollFrame_OnPan(GetCursorPosition())
         end
 
-        SyncMapIconParents()
+        -- Pin-addon child list only churns when another addon adds/removes a
+        -- pin frame, not on player movement, so it gets its own slower clock
+        -- independent of the position-update cadence below.
+        mapIconSyncAccum = mapIconSyncAccum + (elapsed or 0)
+        if mapIconSyncAccum >= 0.3 then
+            mapIconSyncAccum = 0
+            SyncMapIconParents()
+        end
 
+        -- Player arrow stays per-frame and must NOT be throttled: the stock
+        -- WorldMapButton OnUpdate (still called as the original handler
+        -- above) re-Show()s PlayerArrowFrame every frame, so suppressing it
+        -- on a slower clock makes the arrow flicker. Rotation is per-frame
+        -- for the same reason smoothness demands it. The block is a handful
+        -- of C calls; the real cost this function had was the scans below.
         local playerX, playerY = GetPlayerMapPosition("player")
         if not (playerX == 0 and playerY == 0) then
             local _, mapsterArrowScale = GetMapster("arrowScale")
@@ -582,6 +597,14 @@ local function InitRefactorMap()
             if WorldMapPlayer.Player then WorldMapPlayer.Player:Hide() end
             if WorldMapPlayer.texture then WorldMapPlayer.texture:Hide() end
         end
+
+        -- Party/raid dot repositioning and class coloring: up to two O(40)
+        -- unit scans, the expensive half of this function. Only these are
+        -- throttled (~20 Hz) — nothing here fights a stock per-frame Show(),
+        -- so a slower clock is invisible on moving group dots.
+        mapUpdateAccum = mapUpdateAccum + (elapsed or 0)
+        if mapUpdateAccum < 0.05 then return end
+        mapUpdateAccum = 0
 
         local detailWidth = WorldMapDetailFrame:GetWidth()
         local detailHeight = WorldMapDetailFrame:GetHeight()

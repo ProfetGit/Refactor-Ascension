@@ -294,11 +294,18 @@ local scanTip = CreateFrame("GameTooltip", "RefactorCCScanTip", nil,
 scanTip:SetOwner(UIParent, "ANCHOR_NONE")
 
 local tipCache = {} -- [spellId or "n:"..name] = mechanic key or false
+local tipCacheCount = 0
+local TIP_CACHE_CAP = 300 -- distinct enemy debuffs scanned this session; wipe wholesale past this rather than grow forever
 
 local function TooltipMechanic(index, spellId, name)
     local key = spellId or ("n:" .. name)
     local cached = tipCache[key]
     if cached ~= nil then return cached or nil end
+
+    if tipCacheCount >= TIP_CACHE_CAP then
+        tipCache = {}
+        tipCacheCount = 0
+    end
 
     scanTip:SetOwner(UIParent, "ANCHOR_NONE") -- re-owning also resets state
     scanTip:ClearLines()
@@ -319,6 +326,7 @@ local function TooltipMechanic(index, spellId, name)
         if found then break end
     end
     tipCache[key] = found
+    tipCacheCount = tipCacheCount + 1
     return found or nil
 end
 
