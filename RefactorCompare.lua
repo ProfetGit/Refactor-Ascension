@@ -120,6 +120,7 @@ local DEFAULTS = {
     enabled = true,
     lootAlert = true,
     bagIcons = true,
+    secondaryBagArrow = false, -- off by default: blue secondary-verdict arrow on bag icons
     smartEquip = true, -- right-click equip replaces the weaker of a slot pair
     minQuality = 2, -- ignore items below Uncommon so junk doesn't clutter tooltips
     armorTypes = { Cloth = true, Leather = true, Mail = true, Plate = true },
@@ -145,6 +146,11 @@ local DEFAULTS = {
     -- armor-type checkboxes. Stops AutoApplyClassSpec from overwriting
     -- their choice; cleared by /rfc auto like charManualProfile.
     charManualArmor = {},
+    -- charKey -> profile name shown as a SECOND verdict (blue) alongside
+    -- the active profile's on tooltips and bag arrows, for hybrid builds
+    -- gearing two roles at once. Manual-only — auto-selection never picks
+    -- one. nil entry = feature off for that character.
+    charSecondaryProfile = {},
 }
 
 local function CopyTable(src)
@@ -184,6 +190,15 @@ end
 
 local function CharKey()
     return UnitName("player") .. "-" .. GetRealmName()
+end
+
+-- The profile supplying the second (blue) verdict, or nil: unset, pointing
+-- at a deleted profile, or the same as the active profile (identical
+-- verdicts would just be noise). Manual-only per character — see DEFAULTS.
+local function SecondaryProfile()
+    local name = db.charSecondaryProfile[CharKey()]
+    if not name or name == db.activeProfile then return nil end
+    return db.profiles[name]
 end
 
 -- Changes db.activeProfile and remembers the pick against this character,
@@ -1328,15 +1343,18 @@ end
 -- Returns score plus the info needed to compare, or nil if the item isn't
 -- in the client cache yet / isn't equippable gear. bag+slot or invSlot
 -- select the real item instance (see ScanItem).
-local function ScoreItem(link, bag, slot, invSlot, src)
+-- profile defaults to the active profile; the secondary-verdict path passes
+-- its own so one tooltip scan feeds both weighted sums.
+local function ScoreItem(link, bag, slot, invSlot, src, profile)
     local name, _, quality, _, reqLevel, itemType, itemSubType, _, equipLoc =
         GetItemInfo(link)
     if not name or not equipLoc or not SLOTS_FOR_INVTYPE[equipLoc] then
         return nil
     end
 
-    local weights = Weights()
-    local customWeights = ActiveProfile().customWeights
+    profile = profile or ActiveProfile()
+    local weights = profile.weights
+    local customWeights = profile.customWeights
     local score = 0
 
     local scan = ScanItem(link, bag, slot, invSlot, src)
@@ -1395,22 +1413,43 @@ end
 -- (tooltip scan failed). Callers must treat false as "unknown" and stay
 -- silent — never as an empty slot begging to be filled. Second return is
 -- the weapon-DPS share of the score (nil unless the slot holds a weapon),
--- for the offhand discount in the 2H comparison.
-local function ScoreEquipped(slot)
+-- for the offhand discount in the 2H comparison. profile defaults to the
+-- active profile; the secondary verdict passes its own and gets its own
+-- memo fields (score2/dpsScore2) so the two never poison each other.
+local function ScoreEquipped(slot, profile)
     local link = GetInventoryItemLink("player", slot)
     if not link then return nil end
+    local secondary = profile ~= nil
+    profile = profile or ActiveProfile()
     -- Memoized per generation: equipped gear only changes on events that
     -- bump the generation (equip, level, weight/profile edits), so one
     -- score serves every bag slot of a whole redraw — and every hover in
     -- between — instead of re-rendering the worn item's tooltip each time.
     local c = equippedCache[slot]
-    if c and c.gen == generation and c.link == link then
-        return c.score, c.dpsScore
+    local memoHit = c and c.gen == generation and c.link == link
+    if memoHit then
+        if not secondary and c.score then
+            return c.score, c.dpsScore
+        elseif secondary and c.score2 then
+            return c.score2, c.dpsScore2
+        end
+        -- This profile's half isn't memoized yet: fall through and score it.
     end
-    local info = ScoreItem(link, nil, nil, slot)
+    local info = ScoreItem(link, nil, nil, slot, nil, profile)
     if not info then return false end -- unreadable: retry next call, never memoized
-    equippedCache[slot] = { gen = generation, link = link,
-        score = info.score, dpsScore = info.dpsScore }
+    if memoHit then
+        if secondary then
+            c.score2, c.dpsScore2 = info.score, info.dpsScore
+        else
+            c.score, c.dpsScore = info.score, info.dpsScore
+        end
+    elseif secondary then
+        equippedCache[slot] = { gen = generation, link = link,
+            score2 = info.score, dpsScore2 = info.dpsScore }
+    else
+        equippedCache[slot] = { gen = generation, link = link,
+            score = info.score, dpsScore = info.dpsScore }
+    end
     return info.score, info.dpsScore
 end
 
@@ -1439,34 +1478,15 @@ local function OffhandIsShield()
     return equipLoc == "INVTYPE_SHIELD" or equipLoc == "INVTYPE_HOLDABLE"
 end
 
--- Core comparison. Returns nil (nothing to show — including any side we
--- couldn't actually read) or a result table:
---   status  = "upgrade" | "downgrade" | "even" | "empty" | "unusable" | "wrongarmor"
+-- One profile's verdict for an already-scored item. Returns nil (nothing to
+-- show — including any side we couldn't actually read) or a result table:
+--   status  = "upgrade" | "downgrade" | "even" | "empty"
 --   pct     = signed % difference (for upgrade/downgrade/even)
 --   context = optional extra text, e.g. "vs main + off hand"
---   approx  = true when scored from a bare link (base item, not the
---             scaled instance): display as estimate, never as bag arrow
--- (Wrapped by CompareItem below, which memoizes bag-slot results.)
-local function CompareItemUncached(link, bag, slot, invSlot, src)
-    local info = ScoreItem(link, bag, slot, invSlot, src)
-    if not info then return nil end
-    if info.quality < (db.minQuality or 0) then return nil end
-
-    -- Level requirement is deliberately NOT checked via GetItemInfo():
-    -- Ascension scales items, and GetItemInfo() reports the base item's
-    -- required level, not the scaled one on your actual copy. The tooltip
-    -- scan handles it instead — the client renders any requirement you
-    -- don't meet (level, proficiency, class) in red.
-    if info.unusable then
-        return { status = "unusable", context = info.unusableReason }
-    end
-
-    if ARMOR_FILTERED_INVTYPES[info.equipLoc]
-        and info.itemType == "Armor"
-        and db.armorTypes[info.itemSubType] == false then
-        return { status = "wrongarmor", context = info.itemSubType }
-    end
-
+-- profile nil = the active profile (ScoreEquipped's primary memo fields);
+-- the secondary verdict passes its own profile. The slot logic below is
+-- weight-independent — only the scores differ between profiles.
+local function VerdictForProfile(info, profile)
     local equippedScore, context
 
     if info.equipLoc == "INVTYPE_2HWEAPON" then
@@ -1474,8 +1494,8 @@ local function CompareItemUncached(link, bag, slot, invSlot, src)
         -- main hand + off hand combined, the offhand's weapon DPS at the
         -- dual-wield penalty factor (shields/holdables have no DPS share
         -- and keep full value).
-        local mh = ScoreEquipped(16)
-        local oh, ohDps = ScoreEquipped(17)
+        local mh = ScoreEquipped(16, profile)
+        local oh, ohDps = ScoreEquipped(17, profile)
         if mh == false or oh == false then return nil end
         if not mh and not oh then
             return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
@@ -1493,7 +1513,7 @@ local function CompareItemUncached(link, bag, slot, invSlot, src)
             or info.equipLoc == "INVTYPE_SHIELD") then
         -- Anything held while a 2H is equipped means giving up the 2H, so
         -- that's what it has to beat.
-        equippedScore = ScoreEquipped(16)
+        equippedScore = ScoreEquipped(16, profile)
         if equippedScore == false then return nil end
         context = "vs equipped 2H"
     else
@@ -1506,7 +1526,7 @@ local function CompareItemUncached(link, bag, slot, invSlot, src)
         -- the weaker of the equipped items, since that's what you'd replace.
         local weakerSlot
         for _, slot in ipairs(slots) do
-            local s = ScoreEquipped(slot)
+            local s = ScoreEquipped(slot, profile)
             if s == false then return nil end
             if not s then
                 return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
@@ -1530,11 +1550,20 @@ local function CompareItemUncached(link, bag, slot, invSlot, src)
     if equippedScore <= 0 then
         -- Equipped item scores zero or negative under these weights; a
         -- percentage against that is meaningless, treat as free upgrade
-        -- if the new item scores anything at all.
+        -- if the new item scores anything at all. zeroBaseline marks this
+        -- so renderers don't claim the slot is EMPTY (the "empty" status
+        -- only earns the upgrade arrow here — the slot is occupied): sparse
+        -- profiles (e.g. a healer secondary profile looking at a Strength
+        -- belt) score worn gear at 0 all the time.
         if info.score > 0 then
-            return { status = "empty", context = context, levelLocked = info.levelLocked, approx = info.approx }
+            return { status = "empty", zeroBaseline = true, context = context,
+                levelLocked = info.levelLocked, approx = info.approx }
         end
-        return { status = "even", pct = 0, context = context, levelLocked = info.levelLocked, approx = info.approx }
+        -- BOTH sides score nothing: not parity — this profile simply has no
+        -- weights for anything on either item. zeroAll marks it so renderers
+        -- say "No value" instead of a misleading "0%".
+        return { status = "even", pct = 0, zeroAll = true, context = context,
+            levelLocked = info.levelLocked, approx = info.approx }
     end
 
     local pct = (info.score - equippedScore) / equippedScore * 100
@@ -1550,6 +1579,56 @@ local function CompareItemUncached(link, bag, slot, invSlot, src)
         levelLocked = info.levelLocked, approx = info.approx }
 end
 
+-- Core comparison. Returns nil (nothing to show — including any side we
+-- couldn't actually read) or the active profile's result table:
+--   status  = "upgrade" | "downgrade" | "even" | "empty" | "unusable" | "wrongarmor"
+--   pct     = signed % difference (for upgrade/downgrade/even)
+--   context = optional extra text, e.g. "vs main + off hand"
+--   approx  = true when scored from a bare link (base item, not the
+--             scaled instance): display as estimate, never as bag arrow
+--   secondary = the secondary profile's verdict table (same shape), when a
+--             secondary profile is configured. Never attached for the
+--             profile-independent statuses (unusable/wrongarmor); a side
+--             that can't be read kills only the secondary verdict, never
+--             the primary one.
+-- (Wrapped by CompareItem below, which memoizes bag-slot results.)
+local function CompareItemUncached(link, bag, slot, invSlot, src)
+    local info = ScoreItem(link, bag, slot, invSlot, src)
+    if not info then return nil end
+    if info.quality < (db.minQuality or 0) then return nil end
+
+    -- Level requirement is deliberately NOT checked via GetItemInfo():
+    -- Ascension scales items, and GetItemInfo() reports the base item's
+    -- required level, not the scaled one on your actual copy. The tooltip
+    -- scan handles it instead — the client renders any requirement you
+    -- don't meet (level, proficiency, class) in red.
+    if info.unusable then
+        return { status = "unusable", context = info.unusableReason }
+    end
+
+    if ARMOR_FILTERED_INVTYPES[info.equipLoc]
+        and info.itemType == "Armor"
+        and db.armorTypes[info.itemSubType] == false then
+        return { status = "wrongarmor", context = info.itemSubType }
+    end
+
+    local result = VerdictForProfile(info)
+    if not result then return nil end
+
+    -- Secondary (blue) verdict: same tooltip scan, second weighted sum —
+    -- ScanItem is weight-independent and cached, so this costs one
+    -- re-scoring, not one re-scan.
+    local secondary = SecondaryProfile()
+    if secondary then
+        local info2 = ScoreItem(link, bag, slot, invSlot, src, secondary)
+        if info2 then
+            result.secondary = VerdictForProfile(info2, secondary)
+        end
+    end
+
+    return result
+end
+
 -- Bag-slot lookups are the hot path: every open bag re-evaluates every
 -- slot on each redraw (ContainerFrame_Update / Bagnon hooks), so those
 -- results are memoized per location+link until the generation moves.
@@ -1562,7 +1641,11 @@ local function CompareItem(link, bag, slot, invSlot, src)
         local hit = verdictCache[key]
         if hit and hit.gen == generation then return hit.result end
         local result = CompareItemUncached(link, bag, slot)
-        if result then
+        -- Only cache fully-resolved results: with a secondary profile set,
+        -- a missing .secondary half means its equipped side wasn't readable
+        -- yet — caching that would pin the verdict half-drawn until the
+        -- next generation bump instead of retrying like a nil result does.
+        if result and (result.secondary or not SecondaryProfile()) then
             verdictCache[key] = { gen = generation, result = result }
         end
         return result
@@ -1716,17 +1799,26 @@ end
 -- the percentage plus red/green — even without the arrow icon.
 local ARROW_TEXTURE = "Interface\\AddOns\\Refactor\\arrow" -- still used by bag-slot arrows below
 
+-- Secondary-profile verdict color: one hue for everything secondary (text,
+-- tooltip arrow, bag arrow, up and down) — color identifies the PROFILE,
+-- arrow direction carries the verdict. Blue stays clear of the primary
+-- green/red, the gold "even" text, and the quest-reward gold coin.
+local SEC_R, SEC_G, SEC_B = 0.35, 0.65, 1
+
 -- Anchors a tinted arrow texture just left of the given fontstring. Anchored
 -- to that specific text (not the tooltip frame corner, as the old overlay
 -- was) so it can never collide with a long item title above it. `down`
 -- flips the (up-pointing) source art vertically for the downgrade case —
 -- there's only the one arrow.tga asset, no separate down/red variant.
-local function ShowLineArrow(tooltip, fontString, r, g, b, down)
+-- field picks which tooltip texture slot to use (the secondary verdict gets
+-- its own so both can be visible at once).
+local function ShowLineArrow(tooltip, fontString, r, g, b, down, field, offset)
     if not fontString then return end
-    local arrow = tooltip.refactorLineArrow
+    field = field or "refactorLineArrow"
+    local arrow = tooltip[field]
     if not arrow then
         arrow = tooltip:CreateTexture(nil, "OVERLAY")
-        tooltip.refactorLineArrow = arrow
+        tooltip[field] = arrow
     end
     arrow:ClearAllPoints()
     if arrow:SetTexture(ARROW_TEXTURE) then
@@ -1741,12 +1833,23 @@ local function ShowLineArrow(tooltip, fontString, r, g, b, down)
     end
     arrow:SetWidth(12)
     arrow:SetHeight(12)
-    arrow:SetPoint("RIGHT", fontString, "LEFT", -2, 0)
+    if offset then
+        -- Negative inset from the fontstring's RIGHT edge: parks the arrow
+        -- just left of the trailing % when a label leads the text ("Warden
+        -- <arrow> +66%"). Measured from the right edge so the label/gap
+        -- widths never have to be known.
+        arrow:SetPoint("RIGHT", fontString, "RIGHT", offset, 0)
+    else
+        -- -6px clearance (not -2) so the arrow's glyph doesn't touch the
+        -- sign character on the percentage that follows.
+        arrow:SetPoint("RIGHT", fontString, "LEFT", -6, 0)
+    end
     arrow:Show()
 end
 
 local function HideLineArrow(tooltip)
     if tooltip.refactorLineArrow then tooltip.refactorLineArrow:Hide() end
+    if tooltip.refactorLineArrow2 then tooltip.refactorLineArrow2:Hide() end
 end
 
 -- Rows whose right column is reliably blank, tried in order so the verdict
@@ -1773,11 +1876,27 @@ local function SetCompareRowText(tooltip, text, r, g, b)
                 right:SetText(text)
                 right:SetTextColor(r, g, b)
                 right:Show()
-                return right
+                return right, i
             end
         end
     end
     return nil
+end
+
+-- Places text in the right column of an EXISTING tooltip line, used to sit
+-- the secondary verdict directly under the primary's row. Returns the
+-- right-column fontstring, or nil when that line is absent or its right
+-- column is already occupied (leave it be — caller falls back to AddLine).
+local function SetRowRightTextAt(tooltip, i, text, r, g, b)
+    if not i or i < 2 or i > tooltip:NumLines() then return nil end
+    local right = _G[tooltip:GetName() .. "TextRight" .. i]
+    if not right then return nil end
+    local existing = right:GetText()
+    if existing and existing ~= "" then return nil end
+    right:SetText(text)
+    right:SetTextColor(r, g, b)
+    right:Show()
+    return right
 end
 
 local function AddCompareLine(tooltip, link, bag, slot, invSlot, src)
@@ -1801,23 +1920,111 @@ local function AddCompareLine(tooltip, link, bag, slot, invSlot, src)
     elseif result.status == "wrongarmor" then
         text, r, g, b = "Filtered armor type", 0.6, 0.6, 0.6
     elseif result.status == "empty" then
-        text, r, g, b, arrowDir = "Fills empty slot", 0, 1, 0, "up"
+        text = result.zeroBaseline and "Equipped scores 0" or "Fills empty slot"
+        r, g, b, arrowDir = 0, 1, 0, "up"
     elseif result.status == "even" then
-        text, r, g, b = "0%", 1, 0.82, 0
+        if result.zeroAll then
+            -- Neither item scores under this profile: not parity, just
+            -- irrelevance — quiet gray like the armor-filter notice.
+            text, r, g, b = "No value", 0.6, 0.6, 0.6
+        else
+            text, r, g, b = "0%", 1, 0.82, 0
+        end
     elseif result.status == "upgrade" then
         text, r, g, b, arrowDir = string.format("%+.0f%%", result.pct), 0, 1, 0, "up"
     else
         text, r, g, b, arrowDir = string.format("%+.0f%%", result.pct), 1, 0.25, 0.25, "down"
     end
 
-    local fontString = SetCompareRowText(tooltip, text, r, g, b)
+    local fontString, primaryLine = SetCompareRowText(tooltip, text, r, g, b)
     if not fontString then
         tooltip:AddLine(text, r, g, b)
-        fontString = _G[tooltip:GetName() .. "TextLeft" .. tooltip:NumLines()]
+        primaryLine = tooltip:NumLines()
+        fontString = _G[tooltip:GetName() .. "TextLeft" .. primaryLine]
     end
     if arrowDir then
         ShowLineArrow(tooltip, fontString, r, g, b, arrowDir == "down")
     end
+
+    -- Secondary profile's verdict: rides the right column of the row
+    -- directly under the primary's row, the spec-name label folded into
+    -- that right-column text so the whole group right-aligns as
+    -- "Requires Level 17   Warden <arrow> +24%" (the label hugs the arrow —
+    -- it does NOT go to the tooltip's left edge, and no new line is added).
+    -- Falls back to a bottom AddLine when there's no free row just below —
+    -- e.g. the primary itself fell back to AddLine (last line, nothing
+    -- under it) or that line already carries right-column text. Blue
+    -- everywhere so color reads as "the other profile"; arrow direction
+    -- carries up/down.
+    local sec = result.secondary
+    if sec then
+        local text2, arrowDir2, r2, g2, b2 = nil, nil, SEC_R, SEC_G, SEC_B
+        if sec.status == "empty" then
+            text2 = sec.zeroBaseline and "Equipped scores 0" or "Fills empty slot"
+            arrowDir2 = "up"
+        elseif sec.status == "even" then
+            if sec.zeroAll then
+                -- Profile values neither item: gray, not the profile's blue —
+                -- this is a non-verdict, like the armor-filter notice.
+                text2, r2, g2, b2 = "No value", 0.6, 0.6, 0.6
+            else
+                text2 = "0%"
+            end
+        else
+            text2 = string.format("%+.0f%%", sec.pct)
+            arrowDir2 = sec.status == "upgrade" and "up" or "down"
+        end
+        -- Self-label with the secondary profile's spec name so "blue = the
+        -- other spec" needs no legend. Class-spec profiles read
+        -- "<Class> - <Spec>"; show just the spec half (the class is the same
+        -- character), and fall back to the whole name for custom profiles.
+        -- The label is folded INTO the row text (never an overlay fontstring:
+        -- GameTooltip sizes itself from line text only, so overlays clip
+        -- into long left-column rows).
+        local secName = db.charSecondaryProfile[CharKey()]
+        local label = secName and (secName:match("%- (.+)$") or secName)
+        local display, numW = text2, nil
+        if label then
+            if not tooltip.refactorMeasure then
+                -- Unanchored measuring string (never rendered); same font
+                -- object as the tooltip's own text.
+                tooltip.refactorMeasure =
+                    tooltip:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+            end
+            local measure = tooltip.refactorMeasure
+            if arrowDir2 then
+                -- Gap holding the 12px arrow + margins, sized from the
+                -- font's measured space width (interior measurement — a
+                -- pure-space string can report a trimmed width), never a
+                -- fixed count: three GameTooltipText spaces are only ~10px
+                -- and the arrow overlapped the label.
+                measure:SetText("00")
+                local pair = measure:GetStringWidth() or 6
+                measure:SetText("0 0")
+                local spaceW = (measure:GetStringWidth() or (pair + 3)) - pair
+                if spaceW < 1 then spaceW = 3 end
+                display = label .. string.rep(" ", math.ceil(16 / spaceW)) .. text2
+                measure:SetText(text2)
+                numW = measure:GetStringWidth() or 0
+            else
+                display = label .. " " .. text2
+            end
+        end
+        local fs2 = primaryLine
+            and SetRowRightTextAt(tooltip, primaryLine + 1, display, r2, g2, b2)
+        if not fs2 then
+            tooltip:AddLine(display, r2, g2, b2)
+            fs2 = _G[tooltip:GetName() .. "TextLeft" .. tooltip:NumLines()]
+        end
+        if arrowDir2 then
+            -- Arrow between label and number: anchored off the fontstring's
+            -- RIGHT edge by the number's measured width, so it lands 2px
+            -- left of the % no matter how wide the label/gap rendered.
+            ShowLineArrow(tooltip, fs2, SEC_R, SEC_G, SEC_B, arrowDir2 == "down",
+                "refactorLineArrow2", numW and -(numW + 2) or nil)
+        end
+    end
+
     tooltip:Show()
     return true -- a verdict was drawn (callers retry while this is falsy)
 end
@@ -2051,20 +2258,53 @@ local function GetBagArrow(button)
     return arrow
 end
 
+-- Secondary profile's bag arrow: same texture, blue, opposite corner. Only
+-- ever an UPGRADE marker (upgrades/empty slots) — downgrades get no arrow
+-- for either profile.
+local function GetBagArrow2(button)
+    local arrow = button.refactorArrow2
+    if not arrow then
+        arrow = button:CreateTexture(nil, "OVERLAY")
+        arrow:SetWidth(14)
+        arrow:SetHeight(14)
+        arrow:SetPoint("TOPLEFT", button, "TOPLEFT", 1, -1)
+        if arrow:SetTexture(ARROW_TEXTURE) then
+            arrow:SetVertexColor(SEC_R, SEC_G, SEC_B)
+        else
+            arrow:SetTexture(SEC_R, SEC_G, SEC_B, 0.9)
+            arrow:SetWidth(10)
+            arrow:SetHeight(10)
+        end
+        button.refactorArrow2 = arrow
+    end
+    return arrow
+end
+
 local function UpdateArrowForLink(button, link, bag, slot)
-    local show = false
+    local show, show2 = false, false
     if link and db and db.enabled and db.bagIcons then
         local result = CompareItem(link, bag, slot)
         -- The arrow is a promise, not a hint: estimates (base-item link
-        -- scans, cached other-character slots) never earn it.
+        -- scans, cached other-character slots) never earn it — and the
+        -- secondary (blue) arrow plays by the exact same rule.
         show = result ~= nil
             and not result.approx
             and (result.status == "upgrade" or result.status == "empty")
+        local sec = result and result.secondary
+        show2 = db.secondaryBagArrow
+            and sec ~= nil
+            and not result.approx
+            and (sec.status == "upgrade" or sec.status == "empty")
     end
     if show then
         GetBagArrow(button):Show()
     elseif button.refactorArrow then
         button.refactorArrow:Hide()
+    end
+    if show2 then
+        GetBagArrow2(button):Show()
+    elseif button.refactorArrow2 then
+        button.refactorArrow2:Hide()
     end
 end
 
@@ -2731,7 +2971,12 @@ local function TryAlert(link)
         and (result.status == "upgrade" or result.status == "empty") then
         local lockNote = result.levelLocked and " (once you're high enough level)" or ""
         if result.status == "empty" then
-            Print(link .. " fills an empty slot" .. lockNote .. " — worth keeping!")
+            if result.zeroBaseline then
+                Print(link .. " beats your equipped item (it scores 0 under your weights)"
+                    .. lockNote .. " — worth keeping!")
+            else
+                Print(link .. " fills an empty slot" .. lockNote .. " — worth keeping!")
+            end
         else
             Print(string.format("%s looks like a |cff00ff00+%.1f%%|r upgrade%s!",
                 link, result.pct, lockNote))
@@ -2795,12 +3040,35 @@ local function SaveProfileAs(name)
     RefreshConfig()
 end
 
+-- User-facing setter for the secondary (blue) verdict profile — config
+-- window and /rfc secondary. nil/false turns the feature off for this
+-- character. RefreshOpenBags bumps the memo generation: every cached
+-- verdict's .secondary field goes stale the moment this changes.
+local function SetSecondaryProfile(name)
+    if name and not db.profiles[name] then
+        Print("no profile named '" .. name .. "'.")
+        return
+    end
+    db.charSecondaryProfile[CharKey()] = name or nil
+    RefreshOpenBags()
+    RefreshConfig()
+    if name then
+        Print("secondary verdict profile set to '" .. name .. "'.")
+    else
+        Print("secondary verdict profile off.")
+    end
+end
+
 local function DeleteProfile(name)
     if name == "Default" then
         Print("Can't delete the Default profile.")
     elseif db.profiles[name] then
         db.profiles[name] = nil
         if db.activeProfile == name then SetActiveProfile("Default") end
+        -- Characters showing it as their secondary verdict lose that too.
+        for k, v in pairs(db.charSecondaryProfile) do
+            if v == name then db.charSecondaryProfile[k] = nil end
+        end
         Print("Deleted profile '" .. name .. "'.")
         RefreshOpenBags()
         RefreshConfig()
@@ -2819,6 +3087,13 @@ StaticPopupDialogs["REFACTORCOMPARE_DELETE_PROFILE"] = {
 
 RefactorCompareShared.SaveProfileAs = SaveProfileAs
 RefactorCompareShared.DeleteProfile = DeleteProfile
+RefactorCompareShared.SetSecondaryProfile = SetSecondaryProfile
+-- Raw saved pick (name or nil) for the config window's dropdown display;
+-- unlike SecondaryProfile() this reports the setting even while it names
+-- the active profile or a deleted one.
+RefactorCompareShared.SecondaryProfileName = function()
+    return db.charSecondaryProfile[CharKey()]
+end
 
 -- Renames a hand-made profile in place and points every character's
 -- remembered pick (last-active, auto-applied, deliberate choice) at the
@@ -2853,7 +3128,8 @@ RefactorCompareShared.RenameProfile = function(old, new)
     db.profiles[new] = db.profiles[old]
     db.profiles[old] = nil
     if db.activeProfile == old then db.activeProfile = new end
-    for _, map in ipairs({ db.charProfiles, db.charAutoProfile, db.charManualProfile }) do
+    for _, map in ipairs({ db.charProfiles, db.charAutoProfile, db.charManualProfile,
+        db.charSecondaryProfile }) do
         for k, v in pairs(map) do
             if v == old then map[k] = new end
         end
@@ -2945,6 +3221,17 @@ SlashCmdList.REFACTORCOMPARE = function(msg)
         RefreshOpenBags()
         RefreshConfig()
         Print("custom stat '" .. lname .. "' weight set to " .. value .. ".")
+    elseif cmd == "secondary" then
+        local name = rest:match("^%s*(.-)%s*$")
+        if name == "" then
+            local cur = db.charSecondaryProfile[CharKey()]
+            Print(cur and ("secondary verdict profile: '" .. cur .. "'.")
+                or "no secondary verdict profile set. /rfc secondary <name> to set one.")
+        elseif name:lower() == "off" or name:lower() == "none" then
+            SetSecondaryProfile(nil)
+        else
+            SetSecondaryProfile(name)
+        end
     elseif cmd == "profile" then
         local sub, name = rest:match("^(%S*)%s*(.-)$")
         local subl = sub:lower()
@@ -2975,7 +3262,7 @@ SlashCmdList.REFACTORCOMPARE = function(msg)
             Print("usage: /rfc profile <name> | save <name> | delete <name> | list")
         end
     else
-        Print("commands: /rfc (config), toggle, alert, bagicons, auto, debug, quality <n>, weight <stat> <n>, profile ...")
+        Print("commands: /rfc (config), toggle, alert, bagicons, auto, debug, quality <n>, weight <stat> <n>, profile ..., secondary <name|off>")
     end
 end
 

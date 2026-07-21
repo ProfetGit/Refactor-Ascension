@@ -386,7 +386,7 @@ local function CreateToast()
 end
 
 -- data = { link, name, quality, texture, count, subText, upgrade, value }
--- upgrade = nil, or { pct, empty, levelLocked }; bag/slot when the looted
+-- upgrade = nil, or { pct, empty, zeroBaseline, levelLocked }; bag/slot when the looted
 -- copy was located (used only to show the instance tooltip on hover);
 -- value = total worth of the stack in copper (nil = unknown, show nothing).
 SpawnToast = function(data)
@@ -417,7 +417,9 @@ SpawnToast = function(data)
         local u = data.upgrade
         local lockNote = u.levelLocked and " (at level)" or ""
         if u.empty then
-            t.sub:SetText("Fills an empty slot" .. lockNote)
+            -- zeroBaseline: the slot is occupied but the equipped item
+            -- scores 0 under the profile's weights — don't claim it's empty.
+            t.sub:SetText((u.zeroBaseline and "Equipped scores 0" or "Fills an empty slot") .. lockNote)
         else
             t.sub:SetText(string.format("+%.0f%% upgrade%s", u.pct or 0, lockNote))
         end
@@ -507,6 +509,7 @@ local function TryResolve(entry)
                 and (result.status == "upgrade" or result.status == "empty") then
                 upgrade = { pct = result.pct,
                     empty = result.status == "empty",
+                    zeroBaseline = result.zeroBaseline,
                     levelLocked = result.levelLocked }
             end
         end

@@ -413,6 +413,13 @@ local function BuildGeneralPage()
         function(v) DB().bagIcons = v; RefreshBags() end))
     y = y - 28
 
+    p:Track(MakeCheck(p, 0, y, CONTENT_W, "Blue arrows for secondary profile",
+        "Also marks bag items that beat your equipped gear under the " ..
+        "secondary profile's weights, top-left corner of the icon. Off by default.",
+        function() return DB().secondaryBagArrow end,
+        function(v) DB().secondaryBagArrow = v; RefreshBags() end))
+    y = y - 28
+
     p:Track(MakeCheck(p, 0, y, CONTENT_W, "Smart equip rings, trinkets and weapons",
         "Right-click equip replaces the weaker of the two equipped items " ..
         "under current weights, instead of always the first slot. Needs " ..
@@ -662,6 +669,60 @@ local function BuildWeightsPage()
     Explain(deleteBtn, "Delete profile",
         "Deletes the active profile (asks first). Characters using it fall back " ..
         "to Default.")
+    y = y - 38
+
+    -- Secondary verdict -----------------------------------------------------
+    -- Hybrid builds gear two roles at once: a second profile whose verdict
+    -- shows in blue alongside the active profile's green/red, on tooltips
+    -- and bag arrows both. Per-character, manual-only (auto-selection never
+    -- picks one), "None" turns it off.
+    y = Section(child, "Secondary verdict", 0, y, INNER_W)
+    SmallText(child, "Show a second profile's verdict in blue next to the active " ..
+        "profile's — for gearing two roles at the same time.", 0, y, INNER_W)
+    y = y - 30
+
+    local secDD = CreateFrame("Frame", "RefactorUISecondaryDropdown", child,
+        "UIDropDownMenuTemplate")
+    secDD:SetPoint("TOPLEFT", -14, y + 4) -- same template art padding as above
+    UIDropDownMenu_SetWidth(secDD, 200)
+    UIDropDownMenu_Initialize(secDD, function()
+        local d = DB()
+        if not d then return end
+        local cur = shared.SecondaryProfileName and shared.SecondaryProfileName()
+        local none = UIDropDownMenu_CreateInfo()
+        none.text = "None"
+        none.checked = (cur == nil)
+        none.func = function() shared.SetSecondaryProfile(nil) end
+        UIDropDownMenu_AddButton(none)
+        local names = {}
+        for n in pairs(d.profiles) do tinsert(names, n) end
+        table.sort(names)
+        for _, n in ipairs(names) do
+            -- The active profile is excluded: its verdict is already the
+            -- primary one, doubling it would be noise.
+            if n ~= d.activeProfile then
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = n
+                info.checked = (cur == n)
+                info.func = function() shared.SetSecondaryProfile(n) end
+                UIDropDownMenu_AddButton(info)
+            end
+        end
+    end)
+    secDD.Refresh = function(self)
+        local cur = shared.SecondaryProfileName and shared.SecondaryProfileName()
+        UIDropDownMenu_SetText(self, cur or "None")
+    end
+    p:Track(secDD)
+    Explain(secDD, "Secondary verdict",
+        "Picks a second profile whose upgrade verdict appears in blue alongside " ..
+        "the active profile's green/red one — on item tooltips (its own line) " ..
+        "and bag arrows (blue arrow, top-left corner). Blue arrow = upgrade for " ..
+        "the secondary profile.\n\n" ..
+        "|cffff8060Caveat: both verdicts compare against what you're currently " ..
+        "wearing. If your two roles use different gearsets, the secondary verdict " ..
+        "scores the hovered item against your worn gear through the secondary " ..
+        "profile's weights — read it as an estimate in that case.|r")
     y = y - 38
 
     -- Spec profiles --------------------------------------------------------
