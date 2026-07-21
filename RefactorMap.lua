@@ -2,12 +2,18 @@
 -- World map scroll-to-zoom/click-drag-pan and class-colored party/raid map
 -- icons, ported directly from the working Magnify-WotLK addon into Refactor.
 
-do
-    if not (WorldMapFrame and WorldMapScrollFrame and WorldMapDetailFrame
+local function InitRefactorMap()
+    if not (WorldMapFrame and WorldMapDetailFrame
         and WorldMapButton and WORLDMAP_SETTINGS and WorldMapBlobFrame
         and WorldMapPOIFrame and WorldMapPlayer and WorldMapPing
         and WorldMapScreenAnchor) then
         return
+    end
+
+    if not WorldMapScrollFrame then
+        WorldMapScrollFrame = CreateFrame("ScrollFrame", "WorldMapScrollFrame", WorldMapFrame, "FauxScrollFrameTemplate")
+        WorldMapScrollFrame:SetSize(1002, 668)
+        WorldMapScrollFrame:SetPoint("TOPLEFT", WorldMapPositioningGuide or WorldMapFrame, "TOPLEFT")
     end
 
     local MIN_ZOOM = 1.0
@@ -31,7 +37,7 @@ do
     --------------------------------------------------------------------
 
     local coordsFrame = CreateFrame("Frame", nil, WorldMapFrame)
-    coordsFrame:SetFrameLevel(WORLDMAP_POI_FRAMELEVEL)
+    coordsFrame:SetFrameLevel(WORLDMAP_POI_FRAMELEVEL or 10)
     local playerCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     playerCoords:SetPoint("BOTTOMLEFT", WorldMapScrollFrame, "BOTTOMLEFT", 8, 8)
     local cursorCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -334,7 +340,8 @@ do
         end
         setupDeferred = nil
 
-        if WorldMapScrollFrameScrollBar then WorldMapScrollFrameScrollBar:Hide() end
+        local scrollBar = _G["WorldMapScrollFrameScrollBar"]
+        if scrollBar then scrollBar:Hide() end
         WorldMapScrollFrame.panning = false
         WorldMapScrollFrame.moved = false
 
@@ -361,8 +368,8 @@ do
                 WorldMapTitleButton:SetPoint("TOPLEFT", WorldMapFrame, "TOPLEFT", 13, -14)
             end
         else
-            WorldMapScrollFrame:SetPoint("TOPLEFT", WorldMapPositioningGuide, "TOPLEFT", 11, -70.5)
-            WorldMapTrackQuest:SetPoint("BOTTOMLEFT", WorldMapPositioningGuide, "BOTTOMLEFT", 16, -9)
+            WorldMapScrollFrame:SetPoint("TOPLEFT", WorldMapPositioningGuide or WorldMapFrame, "TOPLEFT", 11, -70.5)
+            WorldMapTrackQuest:SetPoint("BOTTOMLEFT", WorldMapPositioningGuide or WorldMapFrame, "BOTTOMLEFT", 16, -9)
         end
 
         WorldMapScrollFrame:SetScale(WORLDMAP_SETTINGS.size)
@@ -630,7 +637,7 @@ do
     WorldMapDetailFrame:SetParent(WorldMapScrollFrame)
 
     WorldMapFrameAreaFrame:SetParent(WorldMapFrame)
-    WorldMapFrameAreaFrame:SetFrameLevel(WORLDMAP_POI_FRAMELEVEL)
+    WorldMapFrameAreaFrame:SetFrameLevel(WORLDMAP_POI_FRAMELEVEL or 10)
     WorldMapFrameAreaFrame:SetPoint("TOP", WorldMapScrollFrame, "TOP", 0, -10)
 
     WorldMapPing.Show = function() return end
@@ -661,9 +668,9 @@ do
 
     hooksecurefunc("WorldMapQuestShowObjectives_AdjustPosition", function()
         if WORLDMAP_SETTINGS.size == WORLDMAP_WINDOWED_SIZE then
-            WorldMapQuestShowObjectives:SetPoint("BOTTOMRIGHT", WorldMapPositioningGuide, "BOTTOMRIGHT", -30 - WorldMapQuestShowObjectivesText:GetWidth(), -9)
+            WorldMapQuestShowObjectives:SetPoint("BOTTOMRIGHT", WorldMapPositioningGuide or WorldMapFrame, "BOTTOMRIGHT", -30 - WorldMapQuestShowObjectivesText:GetWidth(), -9)
         else
-            WorldMapQuestShowObjectives:SetPoint("BOTTOMRIGHT", WorldMapPositioningGuide, "BOTTOMRIGHT", -15 - WorldMapQuestShowObjectivesText:GetWidth(), 4)
+            WorldMapQuestShowObjectives:SetPoint("BOTTOMRIGHT", WorldMapPositioningGuide or WorldMapFrame, "BOTTOMRIGHT", -15 - WorldMapQuestShowObjectivesText:GetWidth(), 4)
         end
     end)
 
@@ -707,5 +714,18 @@ do
     combatWatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
     combatWatcher:SetScript("OnEvent", function()
         if setupDeferred then SetupWorldMapFrame() end
+    end)
+end
+
+if IsAddOnLoaded("Blizzard_WorldMap") or WorldMapFrame then
+    InitRefactorMap()
+else
+    local loadFrame = CreateFrame("Frame")
+    loadFrame:RegisterEvent("ADDON_LOADED")
+    loadFrame:SetScript("OnEvent", function(self, event, addonName)
+        if addonName == "Blizzard_WorldMap" or WorldMapFrame then
+            self:UnregisterEvent("ADDON_LOADED")
+            InitRefactorMap()
+        end
     end)
 end
