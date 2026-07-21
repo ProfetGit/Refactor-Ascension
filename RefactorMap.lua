@@ -1,63 +1,42 @@
 -- RefactorMap.lua
 -- World map scroll-to-zoom/click-drag-pan and class-colored party/raid map
--- icons, ported (MIT license) from Magnify-WotLK
--- (https://github.com/rissole/Magnify-WotLK) into Refactor's own flag and
--- settings system instead of a separate SavedVariable/options panel.
---
--- WorldMapButton's OnUpdate script is fully replaced (position math for the
--- player arrow, party/raid dots, corpse, death release, battleground flags
--- and vehicles) since that positioning has no partial/stock fallback once
--- taken over — same as Magnify itself. Only the interactive pieces are
--- gated behind flags checked at use time, so toggling needs no /reload:
--- mapZoom (scroll-wheel zoom + click-drag pan) and mapClassIcons (class
--- color vs. the stock white dot).
---
--- Coexists with Refactor's own fullMapWindow shell (Refactor.lua): that
--- tweak only moves/scales the outer WorldMapFrame and never touches
--- WorldMapScrollFrame/WorldMapDetailFrame, so both run without conflict —
--- dragging the title strip resizes the window, scrolling over the map
--- content zooms it.
---
--- Performance shape: the replaced WorldMapButton OnUpdate is stock-parity
--- per frame while the map is open; on top of that, class colors are
--- cached per unit token (successes only, wiped on roster events) with
--- texture dirty-checks, the Mapster lookup is cached, map coordinates
--- throttle to 10 Hz, and quest-blob redraws during pan throttle to
--- ~16 Hz with a final redraw on mouse-up. Combat: the map tree is protected on
--- Ascension, so zoom rescales return early in combat and blob/layout
--- work is deferred to PLAYER_REGEN_ENABLED (see the combat section).
---
--- Leatrix Maps ships this SAME Magnify port (Leatrix_Maps_Zoom.lua): its
--- own zoom/pan, class icons, replaced WorldMapButton scripts and the same
--- WorldMapFrame_UpdateQuests -> ResizeQuestPOIs hook. hooksecurefunc hooks
--- stack, and resizePOI is not idempotent — each pass divides the POI
--- anchor by the scale ratio again, so with both addons active the quest
--- markers drift off their true location as the map is zoomed (x/s² instead
--- of x/s), no matter what Refactor's flags are set to. When Leatrix Maps
--- is loaded the whole port below stands down and Leatrix owns the map;
--- only the Refactor-specific extras (map coordinates, move fade) stay
--- active — they read live frame geometry and hook nothing.
+-- icons, ported directly from the working Magnify-WotLK addon into Refactor.
 
-do
-    -- The module cannot function without any of these (the blob frame and
-    -- POI frame included), so check the full set up front rather than
-    -- nil-guarding every use below.
-    if not (WorldMapFrame and WorldMapScrollFrame and WorldMapDetailFrame
+-- Shim IsAddOnLoaded so Questie, HereBeDragons, and other map icon libraries
+-- know a map zoom addon is active and parent their pins to WorldMapButton.
+if IsAddOnLoaded then
+    local orig_IsAddOnLoaded = IsAddOnLoaded
+    function IsAddOnLoaded(name, ...)
+        if name == "Magnify-WotLK" or name == "Magnify" then
+            return true, true
+        end
+        return orig_IsAddOnLoaded(name, ...)
+    end
+end
+
+local function InitRefactorMap()
+    if not (WorldMapFrame and WorldMapDetailFrame
         and WorldMapButton and WORLDMAP_SETTINGS and WorldMapBlobFrame
         and WorldMapPOIFrame and WorldMapPlayer and WorldMapPing
         and WorldMapScreenAnchor) then
         return
     end
 
+    if not WorldMapScrollFrame then
+        WorldMapScrollFrame = CreateFrame("ScrollFrame", "WorldMapScrollFrame", WorldMapFrame, "FauxScrollFrameTemplate")
+        WorldMapScrollFrame:SetSize(1002, 668)
+        WorldMapScrollFrame:SetPoint("TOPLEFT", WorldMapPositioningGuide or WorldMapFrame, "TOPLEFT")
+    end
+
     local MIN_ZOOM = 1.0
-    local MAX_ZOOM = 5.0 -- fixed for everyone, not user-configurable
+    local MAX_ZOOM = 4.0
     local ZOOM_STEP = 0.1
 
     local MINIMODE_MIN_ZOOM, MINIMODE_MAX_ZOOM = 1.0, 3.0
     local MINIMODE_ZOOM_STEP = 0.1
 
     local WORLDMAP_POI_MIN_X, WORLDMAP_POI_MIN_Y = 12, -12
-    local poiMaxX, poiMaxY -- set by SetPOIMaxBounds, changes with current scale
+    local poiMaxX, poiMaxY
 
     local PLAYER_ARROW_SIZE = 36
 
@@ -66,19 +45,15 @@ do
     end
 
     --------------------------------------------------------------------
-    -- Player + cursor coordinates (idea from Mapster's Coords module) —
-    -- gated by mapCoords, checked at use time. Cursor math reads
-    -- WorldMapDetailFrame's live geometry, so it stays correct across
-    -- zoom and pan — including Leatrix Maps' own zoom while the Magnify
-    -- port below is standing down.
+    -- Player + cursor coordinates
     --------------------------------------------------------------------
 
     local coordsFrame = CreateFrame("Frame", nil, WorldMapFrame)
-    coordsFrame:SetFrameLevel(WORLDMAP_POI_FRAMELEVEL)
+    coordsFrame:SetFrameLevel((WORLDMAP_POI_FRAMELEVEL or 10) + 20)
     local playerCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    playerCoords:SetPoint("BOTTOMLEFT", WorldMapScrollFrame, "BOTTOMLEFT", 8, 8)
+    playerCoords:SetPoint("BOTTOMLEFT", WorldMapFrame, "BOTTOMLEFT", 20, 10)
     local cursorCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    cursorCoords:SetPoint("BOTTOMRIGHT", WorldMapScrollFrame, "BOTTOMRIGHT", -8, 8)
+    cursorCoords:SetPoint("BOTTOMRIGHT", WorldMapFrame, "BOTTOMRIGHT", -20, 10)
 
     local function CursorMapPosition()
         local left, top = WorldMapDetailFrame:GetLeft(), WorldMapDetailFrame:GetTop()
@@ -91,9 +66,6 @@ do
         return cx, cy
     end
 
-    -- OnUpdate only runs while the map is shown (parent chain hides it).
-    -- Throttled to 10 Hz: coordinates don't need per-frame updates, and
-    -- SetFormattedText allocates a fresh string every call.
     local coordsAccum = 0
     coordsFrame:SetScript("OnUpdate", function(_, elapsed)
         coordsAccum = coordsAccum + (elapsed or 0)
@@ -121,21 +93,15 @@ do
     end)
 
     --------------------------------------------------------------------
-    -- Fade the map while the character moves — gated by mapMoveFade,
-    -- checked at use time. Alpha is only touched while the feature is
-    -- actively fading (baseline captured at fade start, restored after),
-    -- so a Mapster/user-set map alpha is respected, not overwritten.
-    -- Mousing over the map content restores full visibility.
+    -- Map move fade
     --------------------------------------------------------------------
 
     local FADE_ALPHA = 0.4
-    local FADE_SPEED = 6 -- exponential smoothing factor, ~instant feel
+    local FADE_SPEED = 6
 
-    local fadeBaseline -- alpha before the current fade; nil = not fading
+    local fadeBaseline
     local fadeFrame = CreateFrame("Frame", nil, WorldMapFrame)
     fadeFrame:SetScript("OnUpdate", function(_, elapsed)
-        -- Feature off and not mid-fade: skip even the GetUnitSpeed poll.
-        -- A fade already in progress still restores when toggled off.
         if not fadeBaseline and not Qol("mapMoveFade") then return end
         local moving = GetUnitSpeed and (GetUnitSpeed("player") or 0) > 0
         local wantFade = moving and Qol("mapMoveFade")
@@ -148,7 +114,7 @@ do
         elseif fadeBaseline then
             target = fadeBaseline
         else
-            return -- feature idle: leave alpha alone entirely
+            return
         end
 
         local cur = WorldMapFrame:GetAlpha()
@@ -167,64 +133,207 @@ do
     end)
 
     --------------------------------------------------------------------
-    -- Leatrix Maps stand-down (see file header): Leatrix ships this same
-    -- Magnify port, and running both stacks the UpdateQuests hooks —
-    -- quest POI markers drift off their location as the map is zoomed.
-    -- Leatrix loads before Refactor (alphabetical), so this check is
-    -- reliable at load time. Everything below this point is the port.
+    -- Leatrix Maps stand-down check
     --------------------------------------------------------------------
 
-    if IsAddOnLoaded("Leatrix_Maps") then
-        local notice = CreateFrame("Frame")
-        notice:RegisterEvent("PLAYER_ENTERING_WORLD")
-        notice:SetScript("OnEvent", function(self)
-            self:UnregisterEvent("PLAYER_ENTERING_WORLD")
-            if Qol("mapZoom") or Qol("mapClassIcons") then
-                DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor:|r "
-                    .. "Leatrix Maps is managing the world map, so map"
-                    .. " zoom and class-colored icons are standing down"
-                    .. " (Leatrix provides both). Map coordinates and"
-                    .. " move-fade stay available.")
-            end
-        end)
+    if orig_IsAddOnLoaded and orig_IsAddOnLoaded("Leatrix_Maps") then
         return
     end
 
     --------------------------------------------------------------------
-    -- Mapster / ElvUI cooperation (both listed compatible upstream)
+    -- Map Icon Parent Sync Helper
     --------------------------------------------------------------------
+
+    local function SyncMapIconParents()
+        if not WorldMapButton or not WorldMapFrame then return end
+        local children = { WorldMapFrame:GetChildren() }
+        for _, child in ipairs(children) do
+            if child ~= WorldMapScrollFrame and child ~= WorldMapDetailFrame and child ~= WorldMapButton and child ~= WorldMapFrameAreaFrame and child ~= coordsFrame and child ~= fadeFrame then
+                local name = child:GetName()
+                if name and (name:find("Mapster") or name:find("Option") or name:find("DropDown") or name:find("Title") or name:find("Close") or name:find("Track") or name:find("Zoom") or name:find("Guide")) then
+                    -- UI control frame on WorldMapFrame: DO NOT REPARENT
+                elseif (name and (name:find("Questie") or name:find("HBDPin") or name:find("HBDDot") or name:find("HandyNotes") or name:find("GatherMate") or name:find("TomTomPin"))) or child.data or child.questId then
+                    child:SetParent(WorldMapButton)
+                end
+            end
+        end
+    end
+
+    --------------------------------------------------------------------
+    -- Magnify Map Engine (ported from Magnify-WotLK Main.lua)
+    --------------------------------------------------------------------
+
+    local PreviousState = {
+        panX = 0,
+        panY = 0,
+        scale = 1,
+        zone = 0
+    }
+
+    local function updatePointRelativeTo(frame, newRelativeFrame)
+        if not frame then return end
+        local currentPoint, _currentRelativeFrame, currentRelativePoint, currentOffsetX, currentOffsetY = frame:GetPoint()
+        frame:ClearAllPoints()
+        frame:SetPoint(currentPoint, newRelativeFrame, currentRelativePoint, currentOffsetX, currentOffsetY)
+    end
 
     local function GetElvUI()
         if ElvUI and ElvUI[1] then return ElvUI[1] end
         return nil
     end
 
-    -- The LibStub lookup is the expensive part and its result only changes
-    -- with a /reload, so cache it: the map OnUpdate calls this every frame.
-    -- mapsterChecked is reset in SetupWorldMapFrame (every map open) in
-    -- case Mapster was loaded on demand after Refactor.
-    local mapsterAddon, mapsterChecked
     local function GetMapster(configName)
-        if not mapsterChecked then
-            mapsterChecked = true
-            if LibStub and LibStub:GetLibrary("AceAddon-3.0", true) then
-                mapsterAddon = LibStub:GetLibrary("AceAddon-3.0"):GetAddon("Mapster", true)
-            end
+        if LibStub and LibStub:GetLibrary("AceAddon-3.0", true) then
+            local mapster = LibStub:GetLibrary("AceAddon-3.0"):GetAddon("Mapster", true)
+            if not mapster then return nil, nil end
+            if mapster.db and mapster.db.profile then return mapster, mapster.db.profile[configName] end
         end
-        if mapsterAddon and mapsterAddon.db and mapsterAddon.db.profile then
-            return mapsterAddon, mapsterAddon.db.profile[configName]
-        end
-        return mapsterAddon, nil
+        return nil, nil
     end
 
-    local function updatePointRelativeTo(frame, newRelativeFrame)
-        local point, _rel, relPoint, x, y = frame:GetPoint()
-        frame:ClearAllPoints()
-        frame:SetPoint(point, newRelativeFrame, relPoint, x, y)
+    local function SetPOIMaxBounds()
+        local mapSize = WORLDMAP_SETTINGS.size or 1
+        local detailHeight = WorldMapDetailFrame:GetHeight() or 1000
+        local detailWidth = WorldMapDetailFrame:GetWidth() or 1000
+        poiMaxY = detailHeight * -mapSize + 12
+        poiMaxX = detailWidth * mapSize + 12
+    end
+
+    local function resizePOI(poiButton)
+        if not poiButton then return end
+        local _, _, _, x, y = poiButton:GetPoint()
+        local mapster, mapsterPoiScale = GetMapster("poiScale")
+        local _, mapsterQuestObjectives = GetMapster("questObjectives")
+        if mapster then
+            mapster.WorldMapFrame_DisplayQuestPOI = function() end
+        end
+
+        local effectivePoiScale = (mapsterPoiScale or 1)
+        local posX, posY
+
+        if mapsterQuestObjectives and mapsterQuestObjectives == 1 then
+            local questId = poiButton.questId
+            if questId then
+                local _, normalizedX, normalizedY = QuestPOIGetIconInfo(questId)
+                if normalizedX and normalizedY then
+                    posX = normalizedX * WorldMapDetailFrame:GetWidth() * WORLDMAP_SETTINGS.size
+                    posY = -normalizedY * WorldMapDetailFrame:GetHeight() * WORLDMAP_SETTINGS.size
+                end
+            end
+            if not posX and x ~= nil and y ~= nil then
+                posX = x
+                posY = y
+            end
+        elseif x ~= nil and y ~= nil then
+            posX = x
+            posY = y
+        end
+
+        if posX and posY then
+            local s = WORLDMAP_SETTINGS.size / WorldMapDetailFrame:GetEffectiveScale() * effectivePoiScale
+            posX = posX / s
+            posY = posY / s
+            poiButton:SetScale(s)
+            poiButton:SetPoint("CENTER", poiButton:GetParent(), "TOPLEFT", posX, posY)
+
+            if poiMaxX == nil or poiMaxY == nil then SetPOIMaxBounds() end
+
+            if posY > WORLDMAP_POI_MIN_Y then
+                posY = WORLDMAP_POI_MIN_Y
+            elseif poiMaxY and posY < poiMaxY then
+                posY = poiMaxY
+            end
+            if posX < WORLDMAP_POI_MIN_X then
+                posX = WORLDMAP_POI_MIN_X
+            elseif poiMaxX and posX > poiMaxX then
+                posX = poiMaxX
+            end
+        end
+    end
+
+    local function PersistMapScrollAndPan()
+        PreviousState.panX = WorldMapScrollFrame:GetHorizontalScroll()
+        PreviousState.panY = WorldMapScrollFrame:GetVerticalScroll()
+        PreviousState.scale = WorldMapDetailFrame:GetScale()
+        PreviousState.zone = GetCurrentMapZone()
+    end
+
+    local function AfterScrollOrPan()
+        PersistMapScrollAndPan()
+        if InCombatLockdown() then return end
+        if WORLDMAP_SETTINGS.selectedQuest then
+            WorldMapBlobFrame:DrawQuestBlob(WORLDMAP_SETTINGS.selectedQuestId, false)
+            WorldMapBlobFrame:DrawQuestBlob(WORLDMAP_SETTINGS.selectedQuestId, true)
+        end
+    end
+
+    local function ResizeQuestPOIs()
+        if poiMaxX == nil or poiMaxY == nil then SetPOIMaxBounds() end
+
+        local QUEST_POI_MAX_TYPES = 4
+        local POI_TYPE_MAX_BUTTONS = 25
+
+        for i = 1, QUEST_POI_MAX_TYPES do
+            for j = 1, POI_TYPE_MAX_BUTTONS do
+                local buttonName = "poiWorldMapPOIFrame" .. i .. "_" .. j
+                resizePOI(_G[buttonName])
+            end
+        end
+
+        if QUEST_POI_SWAP_BUTTONS then
+            resizePOI(QUEST_POI_SWAP_BUTTONS["WorldMapPOIFrame"])
+        end
+    end
+
+    local function RedrawSelectedQuest()
+        if WORLDMAP_SETTINGS.selectedQuestId then
+            WorldMapFrame_SelectQuestById(WORLDMAP_SETTINGS.selectedQuestId)
+        else
+            WorldMapFrame_SelectQuestFrame(_G["WorldMapQuestFrame1"])
+        end
+    end
+
+    local function SetDetailFrameScale(num)
+        WorldMapDetailFrame:SetScale(num)
+        SetPOIMaxBounds()
+
+        WorldMapPOIFrame:SetScale(1 / WORLDMAP_SETTINGS.size)
+        WorldMapBlobFrame:SetScale(num)
+
+        WorldMapPlayer:SetScale(1 / WorldMapDetailFrame:GetScale())
+        WorldMapDeathRelease:SetScale(1 / WorldMapDetailFrame:GetScale())
+        if PlayerArrowFrame then PlayerArrowFrame:SetScale(1 / WorldMapDetailFrame:GetScale()) end
+        if PlayerArrowEffectFrame then PlayerArrowEffectFrame:SetScale(1 / WorldMapDetailFrame:GetScale()) end
+        WorldMapCorpse:SetScale(1 / WorldMapDetailFrame:GetScale())
+
+        local numFlags = GetNumBattlefieldFlagPositions()
+        for i = 1, numFlags do
+            local flagFrameName = "WorldMapFlag" .. i
+            if _G[flagFrameName] then _G[flagFrameName]:SetScale(1 / WorldMapDetailFrame:GetScale()) end
+        end
+
+        for i = 1, MAX_PARTY_MEMBERS do
+            if _G["WorldMapParty" .. i] then _G["WorldMapParty" .. i]:SetScale(1 / WorldMapDetailFrame:GetScale()) end
+        end
+
+        for i = 1, MAX_RAID_MEMBERS do
+            if _G["WorldMapRaid" .. i] then _G["WorldMapRaid" .. i]:SetScale(1 / WorldMapDetailFrame:GetScale()) end
+        end
+
+        for i = 1, #MAP_VEHICLES do
+            if MAP_VEHICLES[i] then MAP_VEHICLES[i]:SetScale(1 / WorldMapDetailFrame:GetScale()) end
+        end
+
+        WorldMapFrame_OnEvent(WorldMapFrame, "DISPLAY_SIZE_CHANGED")
+        if WorldMapFrame_UpdateQuests() > 0 then
+            RedrawSelectedQuest()
+        end
     end
 
     local function ElvUI_SetupWorldMapFrame()
-        local worldMap = GetElvUI():GetModule("WorldMap")
+        local elv = GetElvUI()
+        if not elv then return end
+        local worldMap = elv:GetModule("WorldMap")
         if not worldMap then return end
 
         if worldMap.coordsHolder and worldMap.coordsHolder.playerCoords then
@@ -233,12 +342,9 @@ do
 
         if WorldMapDetailFrame.backdrop then
             WorldMapDetailFrame.backdrop:Hide()
-            -- Upstream had `local _, relFrame = WorldMapFrame.backdrop`
-            -- here (always nil, dead branch). The intent was to check what
-            -- the backdrop is anchored to.
             if WorldMapFrame.backdrop then
-                local _, relFrame = WorldMapFrame.backdrop:GetPoint()
-                if relFrame == WorldMapDetailFrame then
+                local _, worldMapRelativeFrame = WorldMapFrame.backdrop:GetPoint()
+                if worldMapRelativeFrame == WorldMapDetailFrame then
                     updatePointRelativeTo(WorldMapFrame.backdrop, WorldMapScrollFrame)
                 end
             end
@@ -257,138 +363,6 @@ do
         end
     end
 
-    --------------------------------------------------------------------
-    -- Scale / POI / quest-blob plumbing
-    --------------------------------------------------------------------
-
-    local function SetPOIMaxBounds()
-        poiMaxY = WorldMapDetailFrame:GetHeight() * -WORLDMAP_SETTINGS.size + 12
-        poiMaxX = WorldMapDetailFrame:GetWidth() * WORLDMAP_SETTINGS.size + 12
-    end
-
-    -- NOT idempotent by nature: each pass divides the POI anchor by the
-    -- scale ratio, so a second pass on an already-rescaled button drifts
-    -- it (x/s² — the same drift the Leatrix stand-down avoids), and the
-    -- UpdateQuests hook can fire several times per zoom step. To stay
-    -- re-entrant, remember what we set: if the button still sits where we
-    -- put it, recover the original anchor (orig = ours × old s) instead of
-    -- treating our own output as fresh stock input. If stock re-anchored
-    -- the button in the meantime, the point won't match and it's treated
-    -- as a fresh anchor.
-    local function resizePOI(poiButton)
-        if not poiButton then return end
-        local _, _, _, x, y = poiButton:GetPoint()
-        if x == nil or y == nil then return end
-        if poiButton.refactorS
-            and abs(poiButton.refactorX - x) < 0.01
-            and abs(poiButton.refactorY - y) < 0.01 then
-            x = x * poiButton.refactorS
-            y = y * poiButton.refactorS
-        end
-        local s = WORLDMAP_SETTINGS.size / WorldMapDetailFrame:GetEffectiveScale()
-        local posX = x * 1 / s
-        local posY = y * 1 / s
-        poiButton:SetScale(s)
-        poiButton:SetPoint("CENTER", poiButton:GetParent(), "TOPLEFT", posX, posY)
-        poiButton.refactorX, poiButton.refactorY, poiButton.refactorS = posX, posY, s
-
-        if posY > WORLDMAP_POI_MIN_Y then posY = WORLDMAP_POI_MIN_Y
-        elseif poiMaxY and posY < poiMaxY then posY = poiMaxY end
-        if posX < WORLDMAP_POI_MIN_X then posX = WORLDMAP_POI_MIN_X
-        elseif poiMaxX and posX > poiMaxX then posX = poiMaxX end
-    end
-
-    local function ResizeQuestPOIs()
-        -- Take over POI placement from Mapster while it's loaded (once per
-        -- pass, not once per button).
-        local mapster = GetMapster("poiScale")
-        if mapster then
-            mapster.WorldMapFrame_DisplayQuestPOI = function() end
-        end
-        local QUEST_POI_MAX_TYPES = 4
-        local POI_TYPE_MAX_BUTTONS = 25
-        for i = 1, QUEST_POI_MAX_TYPES do
-            for j = 1, POI_TYPE_MAX_BUTTONS do
-                resizePOI(_G["poiWorldMapPOIFrame" .. i .. "_" .. j])
-            end
-        end
-        if QUEST_POI_SWAP_BUTTONS then
-            resizePOI(QUEST_POI_SWAP_BUTTONS["WorldMapPOIFrame"])
-        end
-    end
-
-    local function RedrawSelectedQuest()
-        if WORLDMAP_SETTINGS.selectedQuestId then
-            WorldMapFrame_SelectQuestById(WORLDMAP_SETTINGS.selectedQuestId)
-        else
-            WorldMapFrame_SelectQuestFrame(_G["WorldMapQuestFrame1"])
-        end
-    end
-
-    -- DrawQuestBlob touches the protected blob frame; in combat that's a
-    -- blocked action, so record the intent and let combatWatcher replay it
-    -- on PLAYER_REGEN_ENABLED (its restore path re-attaches the blob).
-    local pendingBlobRedraw
-    local function AfterScrollOrPan()
-        if InCombatLockdown() then
-            pendingBlobRedraw = true
-            return
-        end
-        pendingBlobRedraw = nil
-        if WORLDMAP_SETTINGS.selectedQuest then
-            WorldMapBlobFrame:DrawQuestBlob(WORLDMAP_SETTINGS.selectedQuestId, false)
-            WorldMapBlobFrame:DrawQuestBlob(WORLDMAP_SETTINGS.selectedQuestId, true)
-        end
-    end
-
-    local function SetDetailFrameScale(num)
-        WorldMapDetailFrame:SetScale(num)
-        SetPOIMaxBounds()
-
-        WorldMapPOIFrame:SetScale(1 / WORLDMAP_SETTINGS.size)
-        WorldMapBlobFrame:SetScale(num)
-
-        WorldMapPlayer:SetScale(1 / WorldMapDetailFrame:GetScale())
-        WorldMapDeathRelease:SetScale(1 / WorldMapDetailFrame:GetScale())
-        WorldMapCorpse:SetScale(1 / WorldMapDetailFrame:GetScale())
-
-        local numFlags = GetNumBattlefieldFlagPositions()
-        for i = 1, numFlags do
-            local flag = _G["WorldMapFlag" .. i]
-            if flag then flag:SetScale(1 / WorldMapDetailFrame:GetScale()) end
-        end
-        for i = 1, MAX_PARTY_MEMBERS do
-            if _G["WorldMapParty" .. i] then
-                _G["WorldMapParty" .. i]:SetScale(1 / WorldMapDetailFrame:GetScale())
-            end
-        end
-        for i = 1, MAX_RAID_MEMBERS do
-            if _G["WorldMapRaid" .. i] then
-                _G["WorldMapRaid" .. i]:SetScale(1 / WorldMapDetailFrame:GetScale())
-            end
-        end
-        for i = 1, #MAP_VEHICLES do
-            if MAP_VEHICLES[i] then
-                MAP_VEHICLES[i]:SetScale(1 / WorldMapDetailFrame:GetScale())
-            end
-        end
-
-        WorldMapFrame_OnEvent(WorldMapFrame, "DISPLAY_SIZE_CHANGED")
-        if WorldMapFrame_UpdateQuests() > 0 then
-            RedrawSelectedQuest()
-        end
-    end
-
-    --------------------------------------------------------------------
-    -- Layout: reparents the map content into a properly sized scroll
-    -- frame and positions it per map mode (fullscreen / quest-list /
-    -- classic windowed). Runs on every mode switch.
-    --------------------------------------------------------------------
-
-    -- Repositions/reparents most of the Ascension-protected map tree, so
-    -- it's a blocked action in combat (opening the map mid-fight runs this
-    -- from the OnShow hook): record the intent and let combatWatcher run
-    -- it on PLAYER_REGEN_ENABLED. Until then the map shows stock layout.
     local setupDeferred
     local function SetupWorldMapFrame()
         if InCombatLockdown() then
@@ -396,12 +370,9 @@ do
             return
         end
         setupDeferred = nil
-        mapsterChecked = nil -- re-check for a load-on-demand Mapster
-        WorldMapScrollFrame:SetWidth(1002)
-        WorldMapScrollFrame:SetHeight(668)
-        if WorldMapScrollFrameScrollBar then WorldMapScrollFrameScrollBar:Hide() end
-        WorldMapFrame:EnableMouse(true)
-        WorldMapScrollFrame:EnableMouse(true)
+
+        local scrollBar = _G["WorldMapScrollFrameScrollBar"]
+        if scrollBar then scrollBar:Hide() end
         WorldMapScrollFrame.panning = false
         WorldMapScrollFrame.moved = false
 
@@ -428,8 +399,8 @@ do
                 WorldMapTitleButton:SetPoint("TOPLEFT", WorldMapFrame, "TOPLEFT", 13, -14)
             end
         else
-            WorldMapScrollFrame:SetPoint("TOPLEFT", WorldMapPositioningGuide, "TOPLEFT", 11, -70.5)
-            WorldMapTrackQuest:SetPoint("BOTTOMLEFT", WorldMapPositioningGuide, "BOTTOMLEFT", 16, -9)
+            WorldMapScrollFrame:SetPoint("TOPLEFT", WorldMapPositioningGuide or WorldMapFrame, "TOPLEFT", 11, -70.5)
+            WorldMapTrackQuest:SetPoint("BOTTOMLEFT", WorldMapPositioningGuide or WorldMapFrame, "BOTTOMLEFT", 16, -9)
         end
 
         WorldMapScrollFrame:SetScale(WORLDMAP_SETTINGS.size)
@@ -438,24 +409,47 @@ do
         WorldMapDetailFrame:SetAllPoints(WorldMapScrollFrame)
         WorldMapScrollFrame:SetHorizontalScroll(0)
         WorldMapScrollFrame:SetVerticalScroll(0)
-        -- The zoom interaction state must reset with the layout: without
-        -- this, zooming in, closing the map and reopening it leaves
-        -- zoomedIn true with stale maxX/maxY, and a left-drag then pans an
-        -- unzoomed map against the old bounds.
-        WorldMapScrollFrame.zoomedIn = false
-        WorldMapScrollFrame.maxX = 0
-        WorldMapScrollFrame.maxY = 0
+
+        if GetCurrentMapZone() == PreviousState.zone and PreviousState.scale and PreviousState.scale > 1 then
+            SetDetailFrameScale(PreviousState.scale)
+            WorldMapScrollFrame:SetHorizontalScroll(PreviousState.panX)
+            WorldMapScrollFrame:SetVerticalScroll(PreviousState.panY)
+        end
 
         WorldMapButton:SetScale(1)
         WorldMapButton:SetAllPoints(WorldMapDetailFrame)
         WorldMapButton:SetParent(WorldMapDetailFrame)
 
-        WorldMapPOIFrame:SetParent(WorldMapDetailFrame)
-        WorldMapBlobFrame:SetParent(WorldMapDetailFrame)
-        WorldMapBlobFrame:ClearAllPoints()
-        WorldMapBlobFrame:SetAllPoints(WorldMapDetailFrame)
+        if not InCombatLockdown() then
+            if WorldMapPOIFrame:GetParent() ~= WorldMapDetailFrame then WorldMapPOIFrame:SetParent(WorldMapDetailFrame) end
+            if WorldMapBlobFrame:GetParent() ~= WorldMapDetailFrame then
+                WorldMapBlobFrame:SetParent(WorldMapDetailFrame)
+                WorldMapBlobFrame:ClearAllPoints()
+                WorldMapBlobFrame:SetAllPoints(WorldMapDetailFrame)
+            end
+            if WorldMapPlayer:GetParent() ~= WorldMapDetailFrame then WorldMapPlayer:SetParent(WorldMapDetailFrame) end
+            if PlayerArrowFrame and PlayerArrowFrame:GetParent() ~= WorldMapDetailFrame then
+                PlayerArrowFrame:SetParent(WorldMapDetailFrame)
+            end
+            if PlayerArrowEffectFrame and PlayerArrowEffectFrame:GetParent() ~= WorldMapDetailFrame then
+                PlayerArrowEffectFrame:SetParent(WorldMapDetailFrame)
+            end
 
-        WorldMapPlayer:SetParent(WorldMapDetailFrame)
+            for i = 1, MAX_PARTY_MEMBERS do
+                local partyFrame = _G["WorldMapParty" .. i]
+                if partyFrame and partyFrame:GetParent() ~= WorldMapDetailFrame then
+                    partyFrame:SetParent(WorldMapDetailFrame)
+                end
+            end
+            for i = 1, MAX_RAID_MEMBERS do
+                local raidFrame = _G["WorldMapRaid" .. i]
+                if raidFrame and raidFrame:GetParent() ~= WorldMapDetailFrame then
+                    raidFrame:SetParent(WorldMapDetailFrame)
+                end
+            end
+
+            SyncMapIconParents()
+        end
 
         updatePointRelativeTo(WorldMapQuestScrollFrame, WorldMapScrollFrame)
         updatePointRelativeTo(WorldMapQuestDetailScrollFrame, WorldMapScrollFrame)
@@ -463,25 +457,14 @@ do
         if GetElvUI() then ElvUI_SetupWorldMapFrame() end
     end
 
-    --------------------------------------------------------------------
-    -- Zoom / pan interaction — gated by mapZoom, checked at use time
-    --------------------------------------------------------------------
-
-    -- Blob redraws are the heaviest part of panning (a full re-tessellation
-    -- per call, twice), so during a drag they're throttled to ~16 Hz; the
-    -- scroll itself stays per-frame and OnMouseUp does a final redraw.
-    local lastPanBlob = 0
     local function WorldMapScrollFrame_OnPan(cursorX, cursorY)
-        -- Divide by WorldMapButton's effective scale, not WorldMapScrollFrame's:
-        -- WorldMapButton is parented under WorldMapDetailFrame and its effective
-        -- scale grows with zoom, so this converts the cursor's screen-pixel delta
-        -- into WorldMapScrollFrame content units at the CURRENT zoom level.
-        -- Dividing by the scroll frame's own (zoom-independent) scale instead
-        -- under-divides while zoomed in, making the map pan far faster than the
-        -- mouse moves. Matches upstream Magnify, which reads this off `this` —
-        -- the frame the OnUpdate script (WorldMapButton's) is actually running on.
-        local dX = (WorldMapScrollFrame.cursorX - cursorX) / WorldMapButton:GetEffectiveScale()
-        local dY = (cursorY - WorldMapScrollFrame.cursorY) / WorldMapButton:GetEffectiveScale()
+        local dX = WorldMapScrollFrame.cursorX - cursorX
+        local dY = cursorY - WorldMapScrollFrame.cursorY
+        local effScale = WorldMapButton:GetEffectiveScale()
+        if effScale and effScale > 0 then
+            dX = dX / effScale
+            dY = dY / effScale
+        end
         if abs(dX) >= 1 or abs(dY) >= 1 then
             WorldMapScrollFrame.moved = true
 
@@ -492,64 +475,158 @@ do
             local y = max(0, dY + WorldMapScrollFrame.y)
             y = min(y, WorldMapScrollFrame.maxY or y)
             WorldMapScrollFrame:SetVerticalScroll(y)
-            local now = GetTime()
-            if now - lastPanBlob > 0.06 then
-                lastPanBlob = now
-                AfterScrollOrPan()
+            AfterScrollOrPan()
+        end
+    end
+
+    local function ColorWorldMapPartyMemberFrame(partyMemberFrame, unit)
+        local classColor = select(2, UnitClass(unit))
+        local colorObj = classColor and (RAID_CLASS_COLORS[classColor] or (_G.CUSTOM_CLASS_COLORS and _G.CUSTOM_CLASS_COLORS[classColor]))
+        if colorObj and Qol("mapClassIcons") then
+            if partyMemberFrame.colorIcon then
+                partyMemberFrame.colorIcon:Show()
+                partyMemberFrame.colorIcon:SetVertexColor(colorObj.r, colorObj.g, colorObj.b, 1)
+            end
+            if partyMemberFrame.icon then partyMemberFrame.icon:Hide() end
+        else
+            if partyMemberFrame.colorIcon then partyMemberFrame.colorIcon:Hide() end
+            if partyMemberFrame.icon then partyMemberFrame.icon:Show() end
+        end
+    end
+
+    local function WorldMapButton_OnUpdate(self, elapsed)
+        if not Qol("mapZoom") and not Qol("mapClassIcons") then return end
+
+        if WorldMapScrollFrame.panning then
+            WorldMapScrollFrame_OnPan(GetCursorPosition())
+        end
+
+        SyncMapIconParents()
+
+        local playerX, playerY = GetPlayerMapPosition("player")
+        if not (playerX == 0 and playerY == 0) then
+            local _, mapsterArrowScale = GetMapster("arrowScale")
+            if WorldMapPlayer.Icon then
+                WorldMapPlayer.Icon:SetRotation(PlayerArrowFrame:GetFacing())
+                WorldMapPlayer.Icon:SetSize(PLAYER_ARROW_SIZE * (mapsterArrowScale or 1), PLAYER_ARROW_SIZE * (mapsterArrowScale or 1))
+            end
+            local detailWidth = WorldMapDetailFrame:GetWidth()
+            local detailHeight = WorldMapDetailFrame:GetHeight()
+            local scale = WorldMapDetailFrame:GetScale()
+            WorldMapPlayer:ClearAllPoints()
+            WorldMapPlayer:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", playerX * detailWidth * scale, -playerY * detailHeight * scale)
+
+            if PlayerArrowFrame then PlayerArrowFrame:Hide() end
+            if PlayerArrowEffectFrame then PlayerArrowEffectFrame:Hide() end
+            if WorldMapPlayer.Player then WorldMapPlayer.Player:Hide() end
+            if WorldMapPlayer.texture then WorldMapPlayer.texture:Hide() end
+        end
+
+        local detailWidth = WorldMapDetailFrame:GetWidth()
+        local detailHeight = WorldMapDetailFrame:GetHeight()
+        local scale = WorldMapDetailFrame:GetScale()
+
+        if WorldMapScrollFrame.zoomedIn then
+            if GetNumRaidMembers() == 0 then
+                for i = 1, MAX_PARTY_MEMBERS do
+                    local unit = "party" .. i
+                    if UnitExists(unit) then
+                        local icon = _G["WorldMapParty" .. i]
+                        if icon then
+                            local x, y = GetPlayerMapPosition(unit)
+                            if x > 0 and y > 0 then
+                                icon:ClearAllPoints()
+                                icon:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", x * detailWidth * scale, -y * detailHeight * scale)
+                            end
+                        end
+                    end
+                end
+            else
+                for i = 1, MAX_RAID_MEMBERS do
+                    local unit = "raid" .. i
+                    if UnitExists(unit) then
+                        local icon = _G["WorldMapRaid" .. i]
+                        if icon then
+                            local x, y = GetPlayerMapPosition(unit)
+                            if x > 0 and y > 0 then
+                                icon:ClearAllPoints()
+                                icon:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", x * detailWidth * scale, -y * detailHeight * scale)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        if Qol("mapClassIcons") then
+            if GetNumRaidMembers() == 0 then
+                for i = 1, MAX_PARTY_MEMBERS do
+                    local partyMemberFrame = _G["WorldMapParty" .. i]
+                    if partyMemberFrame and partyMemberFrame:IsVisible() then ColorWorldMapPartyMemberFrame(partyMemberFrame, "party" .. i) end
+                end
+            else
+                for i = 1, MAX_RAID_MEMBERS do
+                    local partyMemberFrame = _G["WorldMapRaid" .. i]
+                    if partyMemberFrame and partyMemberFrame:IsVisible() and partyMemberFrame.unit then ColorWorldMapPartyMemberFrame(partyMemberFrame, partyMemberFrame.unit) end
+                end
             end
         end
     end
 
     local function WorldMapScrollFrame_OnMouseWheel(self, delta)
         if not Qol("mapZoom") then return end
-        -- Both paths rescale the Ascension-protected map tree (detail frame
-        -- here, WorldMapFrame in the ctrl path): blocked actions in combat.
         if InCombatLockdown() then return end
 
         if IsControlKeyDown() and WORLDMAP_SETTINGS.size == WORLDMAP_WINDOWED_SIZE then
-            local newScale = WorldMapFrame:GetScale() + delta * MINIMODE_ZOOM_STEP
-            newScale = max(MINIMODE_MIN_ZOOM, min(MINIMODE_MAX_ZOOM, newScale))
+            local oldScale = WorldMapFrame:GetScale()
+            local newScale = oldScale + delta * MINIMODE_ZOOM_STEP
+            newScale = max(MINIMODE_MIN_ZOOM, newScale)
+            newScale = min(MINIMODE_MAX_ZOOM, newScale)
+
             WorldMapFrame:SetScale(newScale)
             WorldMapScreenAnchor.preferredMinimodeScale = newScale
             return
         end
 
-        local oldScrollH = self:GetHorizontalScroll()
-        local oldScrollV = self:GetVerticalScroll()
+        local oldScrollH = WorldMapScrollFrame:GetHorizontalScroll()
+        local oldScrollV = WorldMapScrollFrame:GetVerticalScroll()
 
         local cursorX, cursorY = GetCursorPosition()
-        cursorX = cursorX / self:GetEffectiveScale()
-        cursorY = cursorY / self:GetEffectiveScale()
+        cursorX = cursorX / WorldMapScrollFrame:GetEffectiveScale()
+        cursorY = cursorY / WorldMapScrollFrame:GetEffectiveScale()
 
-        local frameX = cursorX - self:GetLeft()
-        local frameY = self:GetTop() - cursorY
+        local frameX = cursorX - WorldMapScrollFrame:GetLeft()
+        local frameY = WorldMapScrollFrame:GetTop() - cursorY
 
         local oldScale = WorldMapDetailFrame:GetScale()
         local newScale = oldScale * (1.0 + delta * ZOOM_STEP)
-        newScale = max(MIN_ZOOM, min(MAX_ZOOM, newScale))
-        -- Already at the zoom limit: skip the full rescale + quest/POI
-        -- pass this wheel notch would otherwise trigger.
-        if newScale == oldScale then return end
+        newScale = max(MIN_ZOOM, newScale)
+        newScale = min(MAX_ZOOM, newScale)
 
         SetDetailFrameScale(newScale)
 
-        self.maxX = ((WorldMapDetailFrame:GetWidth() * newScale) - self:GetWidth()) / newScale
-        self.maxY = ((WorldMapDetailFrame:GetHeight() * newScale) - self:GetHeight()) / newScale
-        self.zoomedIn = WorldMapDetailFrame:GetScale() > MIN_ZOOM
+        WorldMapScrollFrame.maxX = ((WorldMapDetailFrame:GetWidth() * newScale) - WorldMapScrollFrame:GetWidth()) / newScale
+        WorldMapScrollFrame.maxY = ((WorldMapDetailFrame:GetHeight() * newScale) - WorldMapScrollFrame:GetHeight()) / newScale
+        WorldMapScrollFrame.zoomedIn = WorldMapDetailFrame:GetScale() > MIN_ZOOM
 
         local centerX = oldScrollH + frameX / oldScale
         local centerY = oldScrollV + frameY / oldScale
-        local newScrollH = min(max(centerX - frameX / newScale, 0), self.maxX)
-        local newScrollV = min(max(centerY - frameY / newScale, 0), self.maxY)
+        local newScrollH = centerX - frameX / newScale
+        local newScrollV = centerY - frameY / newScale
 
-        self:SetHorizontalScroll(newScrollH)
-        self:SetVerticalScroll(newScrollV)
+        newScrollH = min(newScrollH, WorldMapScrollFrame.maxX)
+        newScrollH = max(0, newScrollH)
+        newScrollV = min(newScrollV, WorldMapScrollFrame.maxY)
+        newScrollV = max(0, newScrollV)
+
+        WorldMapScrollFrame:SetHorizontalScroll(newScrollH)
+        WorldMapScrollFrame:SetVerticalScroll(newScrollV)
         AfterScrollOrPan()
     end
 
     local function WorldMapButton_OnMouseDown(self, button)
         if not Qol("mapZoom") then return end
-        if button == "LeftButton" and WorldMapScrollFrame.zoomedIn then
+        if button == 'LeftButton' and WorldMapScrollFrame.zoomedIn then
             WorldMapScrollFrame.panning = true
             local x, y = GetCursorPosition()
             WorldMapScrollFrame.cursorX = x
@@ -562,376 +639,32 @@ do
 
     local function WorldMapButton_OnMouseUp(self, button)
         WorldMapScrollFrame.panning = false
+
         if not WorldMapScrollFrame.moved then
             WorldMapButton_OnClick(WorldMapButton, button)
 
-            -- Reset zoom on plain click — but only pay the full rescale
-            -- when actually zoomed in (previously every map click, POI
-            -- clicks included, triggered the whole quest/POI pass), and
-            -- never in combat (SetDetailFrameScale hits the protected
-            -- tree; the zoom visual simply persists until combat ends).
-            if Qol("mapZoom") and WorldMapScrollFrame.zoomedIn
-                and not InCombatLockdown() then
+            if Qol("mapZoom") and WorldMapScrollFrame.zoomedIn and not InCombatLockdown() then
                 SetDetailFrameScale(MIN_ZOOM)
                 WorldMapScrollFrame:SetHorizontalScroll(0)
                 WorldMapScrollFrame:SetVerticalScroll(0)
                 AfterScrollOrPan()
                 WorldMapScrollFrame.zoomedIn = false
             end
-        else
-            AfterScrollOrPan() -- final blob redraw after a throttled pan
         end
+
         WorldMapScrollFrame.moved = false
     end
 
-    --------------------------------------------------------------------
-    -- Class-colored party/raid icons — gated by mapClassIcons
-    --------------------------------------------------------------------
-
-    local function CreateClassColorIcon(memberFrame)
-        if not memberFrame then return end
-        memberFrame.colorIcon = memberFrame:CreateTexture(nil, "ARTWORK")
-        memberFrame.colorIcon:SetAllPoints(memberFrame)
-        memberFrame.colorIcon:SetTexture("Interface\\AddOns\\Refactor\\textures\\WorldMapPlayer")
-        memberFrame.colorIcon:Hide()
-        -- Start in the "no color" state: a fresh texture is visible and
-        -- uncolored (= white), and the dirty-check below early-returns
-        -- when nothing changed — without this marker that white texture
-        -- stayed on screen instead of the stock dot.
-        memberFrame.shownColor = false
-    end
-
-    -- This runs per shown group member per frame while the map is open, so
-    -- cache the class color per unit token (wiped on roster changes) and
-    -- only touch the textures when the shown state actually changes.
-    -- FAILURES ARE NOT CACHED: UnitClass returns nil until the server has
-    -- sent the member's class (right after login/join), and caching that
-    -- pinned every dot white until the next roster change. Ascension's
-    -- client extends RAID_CLASS_COLORS with the CoA class tokens (the same
-    -- table Details colors its bars from); CUSTOM_CLASS_COLORS is checked
-    -- as a fallback for clients/addons that provide it instead.
-    local classColorCache = {}
-    local rosterWatcher = CreateFrame("Frame")
-    rosterWatcher:RegisterEvent("PARTY_MEMBERS_CHANGED")
-    rosterWatcher:RegisterEvent("RAID_ROSTER_UPDATE")
-    rosterWatcher:SetScript("OnEvent", function() wipe(classColorCache) end)
-
-    local function ColorWorldMapPartyMemberFrame(memberFrame, unit)
-        local classColor = unit and classColorCache[unit]
-        if classColor == nil and unit then
-            local token = select(2, UnitClass(unit))
-            local color = token and (RAID_CLASS_COLORS[token]
-                or (_G.CUSTOM_CLASS_COLORS and _G.CUSTOM_CLASS_COLORS[token]))
-            if color then
-                classColorCache[unit] = color
-                classColor = color
-            end
-        end
-        local wantColor = (classColor and Qol("mapClassIcons")) and classColor or nil
-        if memberFrame.shownColor == wantColor then return end
-        memberFrame.shownColor = wantColor
-        if wantColor then
-            memberFrame.colorIcon:Show()
-            memberFrame.icon:Hide()
-            memberFrame.colorIcon:SetVertexColor(classColor.r, classColor.g, classColor.b, 1)
-        else
-            memberFrame.colorIcon:Hide()
-            memberFrame.icon:Show()
+    local function CreateClassColorIcon(partyMemberFrame)
+        if partyMemberFrame then
+            partyMemberFrame.colorIcon = partyMemberFrame:CreateTexture(nil, "ARTWORK")
+            partyMemberFrame.colorIcon:SetAllPoints(partyMemberFrame)
+            partyMemberFrame.colorIcon:SetTexture("Interface\\AddOns\\Refactor\\textures\\WorldMapPlayer")
+            if partyMemberFrame.icon then partyMemberFrame.icon:Hide() end
         end
     end
 
-    --------------------------------------------------------------------
-    -- The full per-frame position update: player arrow, party/raid dots,
-    -- corpse, death release, battleground flags, vehicles, area highlight.
-    -- No stock fallback once replaced, so this always runs regardless of
-    -- mapZoom/mapClassIcons — those flags only gate the interactive bits
-    -- and icon coloring above.
-    --------------------------------------------------------------------
-
-    local function WorldMapButton_OnUpdate(self, elapsed)
-        local x, y = GetCursorPosition()
-        x = x / self:GetEffectiveScale()
-        y = y / self:GetEffectiveScale()
-
-        local centerX, centerY = self:GetCenter()
-        local width, height = self:GetWidth(), self:GetHeight()
-        local adjustedY = (centerY + (height / 2) - y) / height
-        local adjustedX = (x - (centerX - (width / 2))) / width
-
-        local name, fileName, texPercentageX, texPercentageY, textureX, textureY, scrollChildX, scrollChildY
-        if self:IsMouseOver() then
-            name, fileName, texPercentageX, texPercentageY, textureX, textureY, scrollChildX, scrollChildY =
-                UpdateMapHighlight(adjustedX, adjustedY)
-        end
-
-        WorldMapFrame.areaName = name
-        if not WorldMapFrame.poiHighlight then
-            WorldMapFrameAreaLabel:SetText(name)
-        end
-        if fileName then
-            WorldMapHighlight:SetTexCoord(0, texPercentageX, 0, texPercentageY)
-            WorldMapHighlight:SetTexture("Interface\\WorldMap\\" .. fileName .. "\\" .. fileName .. "Highlight")
-            textureX = textureX * width
-            textureY = textureY * height
-            scrollChildX = scrollChildX * width
-            scrollChildY = -scrollChildY * height
-            if textureX > 0 and textureY > 0 then
-                WorldMapHighlight:SetWidth(textureX)
-                WorldMapHighlight:SetHeight(textureY)
-                WorldMapHighlight:SetPoint("TOPLEFT", "WorldMapDetailFrame", "TOPLEFT", scrollChildX, scrollChildY)
-                WorldMapHighlight:Show()
-            end
-        else
-            WorldMapHighlight:Hide()
-        end
-
-        -- Player
-        UpdateWorldMapArrowFrames()
-        local playerX, playerY = GetPlayerMapPosition("player")
-        if playerX == 0 and playerY == 0 then
-            ShowWorldMapArrowFrame(nil)
-            WorldMapPing:Hide()
-            WorldMapPlayer:Hide()
-        else
-            playerX = playerX * WorldMapDetailFrame:GetWidth() * WorldMapDetailFrame:GetScale() * WORLDMAP_SETTINGS.size
-            playerY = -playerY * WorldMapDetailFrame:GetHeight() * WorldMapDetailFrame:GetScale() * WORLDMAP_SETTINGS.size
-            PositionWorldMapArrowFrame("CENTER", "WorldMapDetailFrame", "TOPLEFT", playerX, playerY)
-            ShowWorldMapArrowFrame(nil)
-
-            WorldMapPlayer:SetAllPoints(PlayerArrowFrame)
-            WorldMapPlayer.Icon:SetRotation(PlayerArrowFrame:GetFacing())
-            local _, mapsterArrowScale = GetMapster("arrowScale")
-            WorldMapPlayer.Icon:SetSize(PLAYER_ARROW_SIZE * (mapsterArrowScale or 1),
-                PLAYER_ARROW_SIZE * (mapsterArrowScale or 1))
-            WorldMapPlayer:Show()
-        end
-
-        -- Party / raid
-        local playerCount = 0
-        if GetNumRaidMembers() > 0 then
-            for i = 1, MAX_PARTY_MEMBERS do
-                _G["WorldMapParty" .. i]:Hide()
-            end
-            for i = 1, MAX_RAID_MEMBERS do
-                local unit = "raid" .. i
-                local partyX, partyY = GetPlayerMapPosition(unit)
-                local memberFrame = _G["WorldMapRaid" .. (playerCount + 1)]
-                if (partyX == 0 and partyY == 0) or UnitIsUnit(unit, "player") then
-                    memberFrame:Hide()
-                else
-                    partyX = partyX * WorldMapDetailFrame:GetWidth() * WorldMapDetailFrame:GetScale()
-                    partyY = -partyY * WorldMapDetailFrame:GetHeight() * WorldMapDetailFrame:GetScale()
-                    memberFrame:SetPoint("CENTER", "WorldMapDetailFrame", "TOPLEFT", partyX, partyY)
-                    memberFrame.name = nil
-                    memberFrame.unit = unit
-                    ColorWorldMapPartyMemberFrame(memberFrame, unit)
-                    memberFrame:Show()
-                    playerCount = playerCount + 1
-                end
-            end
-        else
-            for i = 1, MAX_PARTY_MEMBERS do
-                local partyX, partyY = GetPlayerMapPosition("party" .. i)
-                local memberFrame = _G["WorldMapParty" .. i]
-                if partyX == 0 and partyY == 0 then
-                    memberFrame:Hide()
-                else
-                    partyX = partyX * WorldMapButton:GetWidth() * WorldMapDetailFrame:GetScale()
-                    partyY = -partyY * WorldMapButton:GetHeight() * WorldMapDetailFrame:GetScale()
-                    memberFrame:SetPoint("CENTER", "WorldMapButton", "TOPLEFT", partyX, partyY)
-                    ColorWorldMapPartyMemberFrame(memberFrame, "party" .. i)
-                    memberFrame:Show()
-                end
-            end
-        end
-
-        -- Battleground team members (no unit token, positions only)
-        local numTeamMembers = GetNumBattlefieldPositions()
-        for i = playerCount + 1, MAX_RAID_MEMBERS do
-            local partyX, partyY, name2 = GetBattlefieldPosition(i - playerCount)
-            local memberFrame = _G["WorldMapRaid" .. i]
-            if partyX == 0 and partyY == 0 then
-                memberFrame:Hide()
-            else
-                partyX = partyX * WorldMapDetailFrame:GetWidth() * WorldMapDetailFrame:GetScale()
-                partyY = -partyY * WorldMapDetailFrame:GetHeight() * WorldMapDetailFrame:GetScale()
-                memberFrame:SetPoint("CENTER", "WorldMapDetailFrame", "TOPLEFT", partyX, partyY)
-                memberFrame.name = name2
-                memberFrame.unit = nil
-                memberFrame.shownColor = nil -- keep the dirty-check honest
-                memberFrame.colorIcon:Hide()
-                memberFrame.icon:Show()
-                memberFrame:Show()
-            end
-        end
-
-        -- Battleground flags
-        local numFlags = GetNumBattlefieldFlagPositions()
-        for i = 1, numFlags do
-            local flagX, flagY, flagToken = GetBattlefieldFlagPosition(i)
-            local flagFrame = _G["WorldMapFlag" .. i]
-            if flagX == 0 and flagY == 0 then
-                flagFrame:Hide()
-            else
-                flagX = flagX * WorldMapDetailFrame:GetWidth() * WorldMapDetailFrame:GetScale()
-                flagY = -flagY * WorldMapDetailFrame:GetHeight() * WorldMapDetailFrame:GetScale()
-                flagFrame:SetPoint("CENTER", "WorldMapDetailFrame", "TOPLEFT", flagX, flagY)
-                _G[flagFrame:GetName() .. "Texture"]:SetTexture("Interface\\WorldStateFrame\\" .. flagToken)
-                flagFrame:Show()
-            end
-        end
-        for i = numFlags + 1, NUM_WORLDMAP_FLAGS do
-            _G["WorldMapFlag" .. i]:Hide()
-        end
-
-        -- Corpse
-        local corpseX, corpseY = GetCorpseMapPosition()
-        if corpseX == 0 and corpseY == 0 then
-            WorldMapCorpse:Hide()
-        else
-            corpseX = corpseX * WorldMapDetailFrame:GetWidth() * WorldMapDetailFrame:GetScale()
-            corpseY = -corpseY * WorldMapDetailFrame:GetHeight() * WorldMapDetailFrame:GetScale()
-            WorldMapCorpse:SetPoint("CENTER", "WorldMapDetailFrame", "TOPLEFT", corpseX, corpseY)
-            WorldMapCorpse:Show()
-        end
-
-        -- Death release
-        local deathX, deathY = GetDeathReleasePosition()
-        if (deathX == 0 and deathY == 0) or UnitIsGhost("player") then
-            WorldMapDeathRelease:Hide()
-        else
-            deathX = deathX * WorldMapDetailFrame:GetWidth() * WorldMapDetailFrame:GetScale()
-            deathY = -deathY * WorldMapDetailFrame:GetHeight() * WorldMapDetailFrame:GetScale()
-            WorldMapDeathRelease:SetPoint("CENTER", "WorldMapDetailFrame", "TOPLEFT", deathX, deathY)
-            WorldMapDeathRelease:Show()
-        end
-
-        -- Vehicles
-        local numVehicles
-        if GetCurrentMapContinent() == WORLDMAP_WORLD_ID
-            or (GetCurrentMapContinent() ~= -1 and GetCurrentMapZone() == 0) then
-            numVehicles = 0
-        else
-            numVehicles = GetNumBattlefieldVehicles()
-        end
-        local totalVehicles = #MAP_VEHICLES
-        local index = 0
-        for i = 1, numVehicles do
-            if i > totalVehicles then
-                local vehicleName = "WorldMapVehicles" .. i
-                MAP_VEHICLES[i] = CreateFrame("FRAME", vehicleName, WorldMapButton, "WorldMapVehicleTemplate")
-                MAP_VEHICLES[i].texture = _G[vehicleName .. "Texture"]
-            end
-            local vehicleX, vehicleY, unitName, isPossessed, vehicleType, orientation, isPlayer, isAlive =
-                GetBattlefieldVehicleInfo(i)
-            if vehicleX and isAlive and not isPlayer and VEHICLE_TEXTURES[vehicleType] then
-                local vFrame = MAP_VEHICLES[i]
-                vehicleX = vehicleX * WorldMapDetailFrame:GetWidth() * WorldMapDetailFrame:GetScale()
-                vehicleY = -vehicleY * WorldMapDetailFrame:GetHeight() * WorldMapDetailFrame:GetScale()
-                vFrame.texture:SetRotation(orientation)
-                vFrame.texture:SetTexture(WorldMap_GetVehicleTexture(vehicleType, isPossessed))
-                vFrame:SetPoint("CENTER", "WorldMapDetailFrame", "TOPLEFT", vehicleX, vehicleY)
-                vFrame:SetWidth(VEHICLE_TEXTURES[vehicleType].width)
-                vFrame:SetHeight(VEHICLE_TEXTURES[vehicleType].height)
-                vFrame.name = unitName
-                vFrame:Show()
-                index = i
-            else
-                MAP_VEHICLES[i]:Hide()
-            end
-        end
-        if index < totalVehicles then
-            for i = index + 1, totalVehicles do
-                MAP_VEHICLES[i]:Hide()
-            end
-        end
-
-        if WorldMapScrollFrame.panning then
-            local cx, cy = GetCursorPosition()
-            WorldMapScrollFrame_OnPan(cx, cy)
-        end
-    end
-
-    --------------------------------------------------------------------
-    -- Combat blob protection (pattern from Mapster). WorldMapBlobFrame's
-    -- Show/Hide/SetScale are protected calls in combat, and
-    -- SetDetailFrameScale hits SetScale on every zoom step — with the map
-    -- usable mid-fight (fullMapWindow releases the keyboard) that's a
-    -- blocked-action error. In combat the blob frame is parked offscreen
-    -- and those three methods are shadowed with recorders; on leaving
-    -- combat the frame is re-attached and the recorded intent replayed.
-    -- The other combat-sensitive entry points are gated instead: the
-    -- mousewheel zoom paths return early (they rescale the protected
-    -- tree), AfterScrollOrPan records a pending blob redraw, and
-    -- SetupWorldMapFrame defers itself — both replayed on
-    -- PLAYER_REGEN_ENABLED below.
-    --------------------------------------------------------------------
-
-    local blobWasVisible, blobNewScale
-    local blobHideFunc = function() blobWasVisible = nil end
-    local blobShowFunc = function() blobWasVisible = true end
-    local blobScaleFunc = function(self, scale) blobNewScale = scale end
-
-    -- Hit translations read live frame geometry, so they must be
-    -- recalculated one frame AFTER the restore lands, not during it.
-    local blobRestorer = CreateFrame("Frame")
-    local function RestoreBlobHits()
-        blobRestorer:SetScript("OnUpdate", nil)
-        if type(WorldMapBlobFrame_CalculateHitTranslations) == "function" then
-            WorldMapBlobFrame_CalculateHitTranslations()
-        end
-        if WORLDMAP_SETTINGS.selectedQuest
-            and not WORLDMAP_SETTINGS.selectedQuest.completed then
-            WorldMapBlobFrame:DrawQuestBlob(WORLDMAP_SETTINGS.selectedQuestId, true)
-        end
-    end
-
-    local combatWatcher = CreateFrame("Frame")
-    combatWatcher:RegisterEvent("PLAYER_REGEN_DISABLED")
-    combatWatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
-    combatWatcher:SetScript("OnEvent", function(_, event)
-        if event == "PLAYER_REGEN_DISABLED" then
-            blobWasVisible = WorldMapBlobFrame:IsShown()
-            blobNewScale = nil
-            WorldMapBlobFrame:SetParent(nil)
-            WorldMapBlobFrame:ClearAllPoints()
-            -- dummy offscreen position so hit calculations don't blow up
-            WorldMapBlobFrame:SetPoint("TOP", UIParent, "BOTTOM")
-            WorldMapBlobFrame:Hide()
-            WorldMapBlobFrame.Hide = blobHideFunc
-            WorldMapBlobFrame.Show = blobShowFunc
-            WorldMapBlobFrame.SetScale = blobScaleFunc
-        else
-            WorldMapBlobFrame.Hide = nil
-            WorldMapBlobFrame.Show = nil
-            WorldMapBlobFrame.SetScale = nil
-            WorldMapBlobFrame:SetParent(WorldMapDetailFrame)
-            WorldMapBlobFrame:ClearAllPoints()
-            WorldMapBlobFrame:SetAllPoints(WorldMapDetailFrame)
-            if blobNewScale then
-                WorldMapBlobFrame:SetScale(blobNewScale)
-                blobNewScale = nil
-            end
-            WorldMapBlobFrame.xRatio = nil -- force hit recalculations
-            if blobWasVisible then
-                WorldMapBlobFrame:Show()
-                blobRestorer:SetScript("OnUpdate", RestoreBlobHits)
-            end
-            -- Replay anything deferred during combat (pan/scroll blob
-            -- redraws, and the whole layout pass if the map was opened
-            -- mid-fight). The blob is re-attached above, so these are
-            -- safe to run now.
-            if pendingBlobRedraw then AfterScrollOrPan() end
-            if setupDeferred then SetupWorldMapFrame() end
-        end
-    end)
-
-    --------------------------------------------------------------------
-    -- One-time setup
-    --------------------------------------------------------------------
-
-    WorldMapScrollFrame:SetWidth(1002)
-    WorldMapScrollFrame:SetHeight(668)
+    -- Initial setup
     WorldMapScrollFrame:SetScrollChild(WorldMapDetailFrame)
     WorldMapScrollFrame:SetScript("OnMouseWheel", WorldMapScrollFrame_OnMouseWheel)
     WorldMapButton:SetScript("OnMouseDown", WorldMapButton_OnMouseDown)
@@ -939,50 +672,47 @@ do
     WorldMapDetailFrame:SetParent(WorldMapScrollFrame)
 
     WorldMapFrameAreaFrame:SetParent(WorldMapFrame)
-    WorldMapFrameAreaFrame:SetFrameLevel(WORLDMAP_POI_FRAMELEVEL)
+    WorldMapFrameAreaFrame:SetFrameLevel(WORLDMAP_POI_FRAMELEVEL or 10)
     WorldMapFrameAreaFrame:SetPoint("TOP", WorldMapScrollFrame, "TOP", 0, -10)
 
-    -- The stock ping ripple doesn't track pan/zoom correctly; drop it.
     WorldMapPing.Show = function() return end
     WorldMapPing:SetModelScale(0)
 
-    -- WorldMapPlayer ships with its own static icon texture that never
-    -- rotates — left alone it renders on top of the rotating arrow below
-    -- as a second player marker. Strip every pre-existing region (texture
-    -- cleared too, in case something re-shows it) so only our arrow draws.
-    local playerRegions = { WorldMapPlayer:GetRegions() }
-    for _, region in ipairs(playerRegions) do
-        if region.SetTexture then region:SetTexture(nil) end
-        region:Hide()
-    end
-
-    -- Higher-definition player arrow that stays masked correctly on pan
-    -- (the default arrow stays visible even when panned off the map).
     WorldMapPlayer.Icon = WorldMapPlayer:CreateTexture(nil, "ARTWORK")
     WorldMapPlayer.Icon:SetSize(PLAYER_ARROW_SIZE, PLAYER_ARROW_SIZE)
     WorldMapPlayer.Icon:SetPoint("CENTER", 0, 0)
     WorldMapPlayer.Icon:SetTexture("Interface\\AddOns\\Refactor\\textures\\WorldMapArrow")
+
+    if WorldMapPlayer.Player then WorldMapPlayer.Player:Hide() end
+    if WorldMapPlayer.texture then WorldMapPlayer.texture:Hide() end
+
+    if PlayerArrowFrame then
+        PlayerArrowFrame:Hide()
+        PlayerArrowFrame.Show = function() end
+    end
+    if PlayerArrowEffectFrame then
+        PlayerArrowEffectFrame:Hide()
+        PlayerArrowEffectFrame.Show = function() end
+    end
 
     hooksecurefunc("WorldMapFrame_SetFullMapView", SetupWorldMapFrame)
     hooksecurefunc("WorldMapFrame_SetQuestMapView", SetupWorldMapFrame)
     hooksecurefunc("WorldMap_ToggleSizeDown", SetupWorldMapFrame)
     hooksecurefunc("WorldMap_ToggleSizeUp", SetupWorldMapFrame)
     hooksecurefunc("WorldMapFrame_UpdateQuests", ResizeQuestPOIs)
-    hooksecurefunc("WorldMapFrame_SetPOIMaxBounds", SetPOIMaxBounds)
 
     hooksecurefunc("WorldMapQuestShowObjectives_AdjustPosition", function()
         if WORLDMAP_SETTINGS.size == WORLDMAP_WINDOWED_SIZE then
-            WorldMapQuestShowObjectives:SetPoint("BOTTOMRIGHT", WorldMapPositioningGuide, "BOTTOMRIGHT",
-                -30 - WorldMapQuestShowObjectivesText:GetWidth(), -9)
+            WorldMapQuestShowObjectives:SetPoint("BOTTOMRIGHT", WorldMapPositioningGuide or WorldMapFrame, "BOTTOMRIGHT", -30 - WorldMapQuestShowObjectivesText:GetWidth(), -9)
         else
-            WorldMapQuestShowObjectives:SetPoint("BOTTOMRIGHT", WorldMapPositioningGuide, "BOTTOMRIGHT",
-                -15 - WorldMapQuestShowObjectivesText:GetWidth(), 4)
+            WorldMapQuestShowObjectives:SetPoint("BOTTOMRIGHT", WorldMapPositioningGuide or WorldMapFrame, "BOTTOMRIGHT", -15 - WorldMapQuestShowObjectivesText:GetWidth(), 4)
         end
     end)
 
     WorldMapScreenAnchor:StartMoving()
     WorldMapScreenAnchor:SetPoint("TOPLEFT", 10, -118)
     WorldMapScreenAnchor:StopMovingOrSizing()
+
     WorldMapScreenAnchor.preferredMinimodeScale = 1 + (0.4 * WorldMapFrame:GetHeight() / WorldFrame:GetHeight())
 
     WorldMapTitleButton:SetScript("OnDragStart", function()
@@ -990,6 +720,7 @@ do
         WorldMapFrame:ClearAllPoints()
         WorldMapFrame:StartMoving()
     end)
+
     WorldMapTitleButton:SetScript("OnDragStop", function()
         WorldMapFrame:StopMovingOrSizing()
         WorldMapScreenAnchor:StartMoving()
@@ -997,11 +728,15 @@ do
         WorldMapScreenAnchor:StopMovingOrSizing()
     end)
 
-    WorldMapButton:SetScript("OnUpdate", WorldMapButton_OnUpdate)
+    local original_WorldMapButton_OnUpdate = WorldMapButton:GetScript("OnUpdate")
+    WorldMapButton:SetScript("OnUpdate", function(self, elapsed)
+        if original_WorldMapButton_OnUpdate then original_WorldMapButton_OnUpdate(self, elapsed) end
+        WorldMapButton_OnUpdate(self, elapsed)
+    end)
 
-    local originalOnShow = WorldMapFrame:GetScript("OnShow")
+    local original_WorldMapFrame_OnShow = WorldMapFrame:GetScript("OnShow")
     WorldMapFrame:SetScript("OnShow", function(self)
-        if originalOnShow then originalOnShow(self) end
+        if original_WorldMapFrame_OnShow then original_WorldMapFrame_OnShow(self) end
         SetupWorldMapFrame()
     end)
 
@@ -1009,4 +744,23 @@ do
         CreateClassColorIcon(_G["WorldMapParty" .. i])
         CreateClassColorIcon(_G["WorldMapRaid" .. i])
     end
+
+    local combatWatcher = CreateFrame("Frame")
+    combatWatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
+    combatWatcher:SetScript("OnEvent", function()
+        if setupDeferred then SetupWorldMapFrame() end
+    end)
+end
+
+if orig_IsAddOnLoaded and orig_IsAddOnLoaded("Blizzard_WorldMap") or WorldMapFrame then
+    InitRefactorMap()
+else
+    local loadFrame = CreateFrame("Frame")
+    loadFrame:RegisterEvent("ADDON_LOADED")
+    loadFrame:SetScript("OnEvent", function(self, event, addonName)
+        if addonName == "Blizzard_WorldMap" or WorldMapFrame then
+            self:UnregisterEvent("ADDON_LOADED")
+            InitRefactorMap()
+        end
+    end)
 end
