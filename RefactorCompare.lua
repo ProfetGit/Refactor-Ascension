@@ -42,6 +42,8 @@
 --   /rfc alert               toggle loot-moment upgrade alerts
 --   /rfc quality <0-5>       minimum item quality to evaluate
 --   /rfc weight <stat> <n>   set a weight (works for scanned custom stats too)
+--   /rfc hitcap <off|melee|ranged|spell>  value hit only until the cap (per profile)
+--   /rfc hitcap pvp                       toggle PvP cap target (lower %)
 --   /rfc auto                forget the manual profile pick, resume class/spec auto-selection
 --   /rfc profile <name>      switch to a saved profile
 --   /rfc profile save <name> save current weights as a profile
@@ -1098,6 +1100,10 @@ local function ScanItem(link, bag, slot, invSlot, src)
         cacheKey = "b:" .. bag .. ":" .. slot .. ":" .. link
     elseif invSlot then
         cacheKey = "e:" .. invSlot .. ":" .. link
+    elseif src and src.merchantSlot then
+        cacheKey = "m:" .. src.merchantSlot .. ":" .. link
+    elseif src and src.buybackSlot then
+        cacheKey = "bb:" .. src.buybackSlot .. ":" .. link
     elseif src and src.roll then
         cacheKey = "r:" .. src.roll .. ":" .. link
     elseif src and src.lootSlot then
@@ -1128,6 +1134,10 @@ local function ScanItem(link, bag, slot, invSlot, src)
         scanTip:SetBagItem(bag, slot)
     elseif invSlot then
         scanTip:SetInventoryItem("player", invSlot)
+    elseif src and src.merchantSlot then
+        scanTip:SetMerchantItem(src.merchantSlot)
+    elseif src and src.buybackSlot then
+        scanTip:SetBuybackItem(src.buybackSlot)
     elseif src and src.roll then
         scanTip:SetLootRollItem(src.roll)
     elseif src and src.lootSlot then
@@ -1359,11 +1369,13 @@ local function ScoreItem(link, bag, slot, invSlot, src, profile)
 
     local scan = ScanItem(link, bag, slot, invSlot, src)
     if scan.failed then return nil end -- no data: no verdict, never a guess
+    local hitAmount = 0 -- raw hit rating on the item, for the hit-cap correction
     for statName, amount in pairs(scan.stats) do
         local key = STAT_NAME_KEYS[statName]
         local w
         if key then
             w = weights[key] or 0
+            if key == "HIT" then hitAmount = hitAmount + amount end
         else
             w = customWeights[statName]
             if w == nil then w = weights.UNKNOWN or 0 end
@@ -1394,6 +1406,7 @@ local function ScoreItem(link, bag, slot, invSlot, src, profile)
     return {
         score = score,
         dpsScore = dpsScore, -- weapon-DPS share of score (nil for non-weapons)
+        hit = hitAmount, -- raw hit rating on the item (hit-cap correction)
         quality = quality,
         reqLevel = reqLevel,
         itemType = itemType,
@@ -1413,9 +1426,11 @@ end
 -- (tooltip scan failed). Callers must treat false as "unknown" and stay
 -- silent — never as an empty slot begging to be filled. Second return is
 -- the weapon-DPS share of the score (nil unless the slot holds a weapon),
--- for the offhand discount in the 2H comparison. profile defaults to the
--- active profile; the secondary verdict passes its own and gets its own
--- memo fields (score2/dpsScore2) so the two never poison each other.
+-- for the offhand discount in the 2H comparison. Third return is the item's
+-- raw hit rating (for the hit-cap correction in VerdictForProfile). profile
+-- defaults to the active profile; the secondary verdict passes its own and
+-- gets its own memo fields (score2/dpsScore2/hit2) so the two never poison
+-- each other.
 local function ScoreEquipped(slot, profile)
     local link = GetInventoryItemLink("player", slot)
     if not link then return nil end
@@ -1429,9 +1444,9 @@ local function ScoreEquipped(slot, profile)
     local memoHit = c and c.gen == generation and c.link == link
     if memoHit then
         if not secondary and c.score then
-            return c.score, c.dpsScore
+            return c.score, c.dpsScore, c.hitAmt
         elseif secondary and c.score2 then
-            return c.score2, c.dpsScore2
+            return c.score2, c.dpsScore2, c.hitAmt2
         end
         -- This profile's half isn't memoized yet: fall through and score it.
     end
@@ -1439,18 +1454,18 @@ local function ScoreEquipped(slot, profile)
     if not info then return false end -- unreadable: retry next call, never memoized
     if memoHit then
         if secondary then
-            c.score2, c.dpsScore2 = info.score, info.dpsScore
+            c.score2, c.dpsScore2, c.hitAmt2 = info.score, info.dpsScore, info.hit
         else
-            c.score, c.dpsScore = info.score, info.dpsScore
+            c.score, c.dpsScore, c.hitAmt = info.score, info.dpsScore, info.hit
         end
     elseif secondary then
         equippedCache[slot] = { gen = generation, link = link,
-            score2 = info.score, dpsScore2 = info.dpsScore }
+            score2 = info.score, dpsScore2 = info.dpsScore, hitAmt2 = info.hit }
     else
         equippedCache[slot] = { gen = generation, link = link,
-            score = info.score, dpsScore = info.dpsScore }
+            score = info.score, dpsScore = info.dpsScore, hitAmt = info.hit }
     end
-    return info.score, info.dpsScore
+    return info.score, info.dpsScore, info.hit
 end
 
 local function MainHandIs2H()
@@ -1478,29 +1493,132 @@ local function OffhandIsShield()
     return equipLoc == "INVTYPE_SHIELD" or equipLoc == "INVTYPE_HOLDABLE"
 end
 
+--------------------------------------------------------------------------
+-- Hit cap
+--------------------------------------------------------------------------
+-- Hit rating past the cap is worthless; below it, valuable. The linear
+-- score can't express that, so an opt-in per-profile "hit cap" mode re-scores
+-- the HIT term as a marginal value: full weight up to the cap given the hit
+-- you ALREADY wear, ~zero past it. Everything works in rating-space, matching
+-- the game's own "7/22" (current rating / rating-for-cap) sheet display —
+-- talent/racial flat-% hit is deliberately out of scope (v1 limitation).
+local HITCAP_INDEX    = { melee = 6, ranged = 7, spell = 8 } -- CR_HIT_MELEE/RANGED/SPELL
+local HITCAP_PCT       = { melee = 8, ranged = 8, spell = 17 } -- % vs a raid boss (PvE)
+local HITCAP_PCT_PVP   = { melee = 5, ranged = 5, spell = 4 }  -- % vs a player (PvP)
+
+local function HitCapMode(profile)
+    local hc = profile and profile.hitCap
+    local mode = hc and hc.mode
+    if mode == "melee" or mode == "ranged" or mode == "spell" then return mode end
+    return "off"
+end
+
+local function HitCapPvP(profile)
+    local hc = profile and profile.hitCap
+    return hc and hc.pvp or false
+end
+
+-- Rating needed for 1% hit of this type, read LIVE from the game so it tracks
+-- Ascension's own scaling and the player's level (same source as the "7/22"
+-- display). GetCombatRatingBonus is 0 when current rating is 0, so the ratio
+-- is only derivable with some hit on; cache the last-good value per type and
+-- fall back to it. Returns nil when never seen — caller then treats the item
+-- as fully under-cap (a player with no hit is far under any cap anyway).
+local function HitRatingPerPct(mode)
+    local idx = HITCAP_INDEX[mode]
+    if not idx or not GetCombatRating or not GetCombatRatingBonus then return nil end
+    local rating = GetCombatRating(idx)
+    local pct = GetCombatRatingBonus(idx)
+    if rating and pct and pct > 0 then
+        local ratio = rating / pct
+        db.hitCapRatio = db.hitCapRatio or {}
+        db.hitCapRatio[mode] = ratio
+        return ratio
+    end
+    return db.hitCapRatio and db.hitCapRatio[mode] or nil
+end
+
+-- Cap rating for this profile's hit mode, or nil (mode off / ratio unknown).
+-- Targets the PvE cap by default; with hitCap.pvp = true, targets the lower
+-- PvP cap instead (the other cap is shown in the readout for reference).
+local function HitCapRating(profile)
+    local mode = HitCapMode(profile)
+    if mode == "off" then return nil end
+    local ratio = HitRatingPerPct(mode)
+    if not ratio then return nil end
+    local pctTable = HitCapPvP(profile) and HITCAP_PCT_PVP or HITCAP_PCT
+    return pctTable[mode] * ratio, mode
+end
+
+-- Current total hit rating of the profile's mode (from all worn gear).
+local function CurrentHitRating(mode)
+    local idx = HITCAP_INDEX[mode]
+    if not idx or not GetCombatRating then return 0 end
+    return GetCombatRating(idx) or 0
+end
+
+-- Cap-corrects a (new item, equipped item) score pair for one slot. Replaces
+-- the flat linear hit term (wUnder * hit, already baked into both scores) with
+-- the item's MARGINAL cap value given the hit worn on OTHER slots. wOver = 0:
+-- hit past the cap is worth nothing. Returns the two corrected scores.
+local function ApplyHitCap(profile, newScore, newHit, equippedScore, equippedHit)
+    local cap, mode = HitCapRating(profile)
+    if not cap then return newScore, equippedScore end
+    local wUnder = (profile.weights and profile.weights.HIT) or 0
+    if wUnder == 0 then return newScore, equippedScore end
+    newHit = newHit or 0
+    equippedHit = equippedHit or 0
+    local hitOther = CurrentHitRating(mode) - equippedHit
+    if hitOther < 0 then hitOther = 0 end
+    local function capVal(h)
+        if h <= cap then return wUnder * h end
+        return wUnder * cap -- wOver = 0: nothing past the cap
+    end
+    local base = capVal(hitOther)
+    newScore = newScore - wUnder * newHit + (capVal(hitOther + newHit) - base)
+    equippedScore = equippedScore - wUnder * equippedHit + (capVal(hitOther + equippedHit) - base)
+    return newScore, equippedScore
+end
+
 -- One profile's verdict for an already-scored item. Returns nil (nothing to
 -- show — including any side we couldn't actually read) or a result table:
 --   status  = "upgrade" | "downgrade" | "even" | "empty"
 --   pct     = signed % difference (for upgrade/downgrade/even)
+--   gain    = absolute score difference (new - equipped; the new item's own
+--             score when the slot is empty or scores zero). Percentages are
+--             not comparable across slots — a +50% ring can be worth less
+--             than a +10% two-hander — so anything ranking DIFFERENT items
+--             against each other (quest reward auto-pick) must use this.
 --   context = optional extra text, e.g. "vs main + off hand"
 -- profile nil = the active profile (ScoreEquipped's primary memo fields);
 -- the secondary verdict passes its own profile. The slot logic below is
 -- weight-independent — only the scores differ between profiles.
 local function VerdictForProfile(info, profile)
-    local equippedScore, context
+    local equippedScore, equippedHit, context
+    -- profile may be nil (primary verdict = active profile); resolve it for
+    -- the hit-cap correction, which needs the real weights/hitCap table.
+    local capProfile = profile or ActiveProfile()
+    -- New item's own cap-corrected score, for the empty/zero-baseline gains
+    -- (quest auto-pick ranks by gain, so hit over cap must not inflate it).
+    local function emptyNewScore()
+        local ns = ApplyHitCap(capProfile, info.score, info.hit, 0, 0)
+        return ns
+    end
 
     if info.equipLoc == "INVTYPE_2HWEAPON" then
         -- A two-hander replaces everything you're holding: compare against
         -- main hand + off hand combined, the offhand's weapon DPS at the
         -- dual-wield penalty factor (shields/holdables have no DPS share
         -- and keep full value).
-        local mh = ScoreEquipped(16, profile)
-        local oh, ohDps = ScoreEquipped(17, profile)
+        local mh, _, mhHit = ScoreEquipped(16, profile)
+        local oh, ohDps, ohHit = ScoreEquipped(17, profile)
         if mh == false or oh == false then return nil end
         if not mh and not oh then
-            return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
+            return { status = "empty", gain = emptyNewScore(),
+                levelLocked = info.levelLocked, approx = info.approx }
         end
         equippedScore = (mh or 0) + (oh or 0)
+        equippedHit = (mhHit or 0) + (ohHit or 0)
         if oh and ohDps then
             equippedScore = equippedScore - ohDps * (1 - OFFHAND_DPS_FACTOR)
         end
@@ -1513,7 +1631,7 @@ local function VerdictForProfile(info, profile)
             or info.equipLoc == "INVTYPE_SHIELD") then
         -- Anything held while a 2H is equipped means giving up the 2H, so
         -- that's what it has to beat.
-        equippedScore = ScoreEquipped(16, profile)
+        equippedScore, _, equippedHit = ScoreEquipped(16, profile)
         if equippedScore == false then return nil end
         context = "vs equipped 2H"
     else
@@ -1526,13 +1644,14 @@ local function VerdictForProfile(info, profile)
         -- the weaker of the equipped items, since that's what you'd replace.
         local weakerSlot
         for _, slot in ipairs(slots) do
-            local s = ScoreEquipped(slot, profile)
+            local s, _, sHit = ScoreEquipped(slot, profile)
             if s == false then return nil end
             if not s then
-                return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
+                return { status = "empty", gain = emptyNewScore(),
+                    levelLocked = info.levelLocked, approx = info.approx }
             end
             if not equippedScore or s < equippedScore then
-                equippedScore, weakerSlot = s, slot
+                equippedScore, equippedHit, weakerSlot = s, sHit, slot
             end
         end
         -- When two slots competed, name the loser so the verdict says
@@ -1545,8 +1664,17 @@ local function VerdictForProfile(info, profile)
     end
 
     if not equippedScore then
-        return { status = "empty", levelLocked = info.levelLocked, approx = info.approx }
+        return { status = "empty", gain = emptyNewScore(),
+            levelLocked = info.levelLocked, approx = info.approx }
     end
+
+    -- Both sides readable: re-score the HIT term against the cap before
+    -- comparing (no-op when the profile's hit-cap mode is off). newScore is
+    -- info.score with the cap correction; the linear info.score is untouched.
+    local newScore
+    newScore, equippedScore = ApplyHitCap(capProfile, info.score, info.hit,
+        equippedScore, equippedHit)
+
     if equippedScore <= 0 then
         -- Equipped item scores zero or negative under these weights; a
         -- percentage against that is meaningless, treat as free upgrade
@@ -1555,18 +1683,20 @@ local function VerdictForProfile(info, profile)
         -- only earns the upgrade arrow here — the slot is occupied): sparse
         -- profiles (e.g. a healer secondary profile looking at a Strength
         -- belt) score worn gear at 0 all the time.
-        if info.score > 0 then
+        if newScore > 0 then
             return { status = "empty", zeroBaseline = true, context = context,
+                gain = newScore,
                 levelLocked = info.levelLocked, approx = info.approx }
         end
         -- BOTH sides score nothing: not parity — this profile simply has no
         -- weights for anything on either item. zeroAll marks it so renderers
         -- say "No value" instead of a misleading "0%".
         return { status = "even", pct = 0, zeroAll = true, context = context,
+            gain = 0,
             levelLocked = info.levelLocked, approx = info.approx }
     end
 
-    local pct = (info.score - equippedScore) / equippedScore * 100
+    local pct = (newScore - equippedScore) / equippedScore * 100
     -- Clamp absurd percentages (tiny denominators) so the display stays sane.
     if pct > 999 then pct = 999 elseif pct < -999 then pct = -999 end
 
@@ -1576,6 +1706,7 @@ local function VerdictForProfile(info, profile)
     else status = "even" end
 
     return { status = status, pct = pct, context = context,
+        gain = newScore - equippedScore,
         levelLocked = info.levelLocked, approx = info.approx }
 end
 
@@ -1797,7 +1928,54 @@ end
 -- guaranteed to never collide with anything else, at the cost of the
 -- compact corner-badge look. Direction is still unambiguous — sign on
 -- the percentage plus red/green — even without the arrow icon.
-local ARROW_TEXTURE = "Interface\\AddOns\\Refactor\\arrow" -- still used by bag-slot arrows below
+local ARROW_TEXTURE = "Interface\\AddOns\\Refactor\\arrow" -- fallback texture asset
+local LOOT_TOAST_ATLAS = "Interface\\LootFrame\\LootToastAtlas"
+
+local ATLAS_COORDS = {
+    ["loottoast-arrow-green"] = { left = 0.858398, right = 0.878906, top = 0.158203, bottom = 0.207031 },
+    ["loottoast-arrow-blue"]  = { left = 0.835938, right = 0.856445, top = 0.158203, bottom = 0.207031 },
+    ["loottoast-arrow-red"]   = { left = 0.878906, right = 0.899414, top = 0.158203, bottom = 0.207031 },
+}
+
+local function SetArrowAtlas(arrow, atlasName, fallbackR, fallbackG, fallbackB, flipY)
+    local coords = ATLAS_COORDS[atlasName] or ATLAS_COORDS["loottoast-arrow-green"]
+    if coords then
+        if arrow:SetTexture(LOOT_TOAST_ATLAS) then
+            local top = flipY and coords.bottom or coords.top
+            local bottom = flipY and coords.top or coords.bottom
+            arrow:SetTexCoord(coords.left, coords.right, top, bottom)
+            if arrow.SetDesaturated then arrow:SetDesaturated(false) end
+            if fallbackR and fallbackG and fallbackB then
+                arrow:SetVertexColor(fallbackR, fallbackG, fallbackB)
+            else
+                arrow:SetVertexColor(1, 1, 1)
+            end
+            return true
+        end
+    end
+    if arrow.SetAtlas then
+        local ok = pcall(arrow.SetAtlas, arrow, atlasName)
+        if ok then
+            if arrow.SetDesaturated then arrow:SetDesaturated(false) end
+            if fallbackR and fallbackG and fallbackB then
+                arrow:SetVertexColor(fallbackR, fallbackG, fallbackB)
+            else
+                arrow:SetVertexColor(1, 1, 1)
+            end
+            arrow:SetTexCoord(0, 1, flipY and 1 or 0, flipY and 0 or 1)
+            return true
+        end
+    end
+    if arrow:SetTexture(ARROW_TEXTURE) then
+        if arrow.SetDesaturated then arrow:SetDesaturated(false) end
+        arrow:SetTexCoord(0, 1, flipY and 1 or 0, flipY and 0 or 1)
+        arrow:SetVertexColor(fallbackR or 0, fallbackG or 1, fallbackB or 0)
+        return true
+    else
+        arrow:SetTexture(fallbackR or 0, fallbackG or 1, fallbackB or 0, 0.9)
+        return false
+    end
+end
 
 -- Secondary-profile verdict color: one hue for everything secondary (text,
 -- tooltip arrow, bag arrow, up and down) — color identifies the PROFILE,
@@ -1821,18 +1999,20 @@ local function ShowLineArrow(tooltip, fontString, r, g, b, down, field, offset)
         tooltip[field] = arrow
     end
     arrow:ClearAllPoints()
-    if arrow:SetTexture(ARROW_TEXTURE) then
-        arrow:SetVertexColor(r, g, b)
+
+    if not down and b > 0.5 and r < 0.5 then
+        SetArrowAtlas(arrow, "loottoast-arrow-blue", nil, nil, nil, false)
+    elseif not down and g > 0.5 and r < 0.5 then
+        SetArrowAtlas(arrow, "loottoast-arrow-green", nil, nil, nil, false)
+    elseif down then
+        -- Red downgrade arrow using LootToastAtlas sprite flipped vertically with red vertex tinting
+        SetArrowAtlas(arrow, "loottoast-arrow-red", r, g, b, true)
     else
-        arrow:SetTexture(r, g, b, 0.9)
+        SetArrowAtlas(arrow, "loottoast-arrow-green", r, g, b, false)
     end
-    if down then
-        arrow:SetTexCoord(0, 1, 1, 0)
-    else
-        arrow:SetTexCoord(0, 1, 0, 1)
-    end
+
     arrow:SetWidth(12)
-    arrow:SetHeight(12)
+    arrow:SetHeight(14)
     if offset then
         -- Negative inset from the fontstring's RIGHT edge: parks the arrow
         -- just left of the trailing % when a label leads the text ("Warden
@@ -1840,9 +2020,9 @@ local function ShowLineArrow(tooltip, fontString, r, g, b, down, field, offset)
         -- widths never have to be known.
         arrow:SetPoint("RIGHT", fontString, "RIGHT", offset, 0)
     else
-        -- -6px clearance (not -2) so the arrow's glyph doesn't touch the
-        -- sign character on the percentage that follows.
-        arrow:SetPoint("RIGHT", fontString, "LEFT", -6, 0)
+        -- -2px clearance so the primary arrow aligns perfectly with the
+        -- secondary arrow on the line below.
+        arrow:SetPoint("RIGHT", fontString, "LEFT", -2, 0)
     end
     arrow:Show()
 end
@@ -1936,14 +2116,23 @@ local function AddCompareLine(tooltip, link, bag, slot, invSlot, src)
         text, r, g, b, arrowDir = string.format("%+.0f%%", result.pct), 1, 0.25, 0.25, "down"
     end
 
+    local w1, w2 = 0, 0
+    if arrowDir or sec then
+        if not tooltip.refactorMeasure then
+            tooltip.refactorMeasure = tooltip:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+        end
+        local measure = tooltip.refactorMeasure
+        if arrowDir then
+            measure:SetText(text)
+            w1 = measure:GetStringWidth() or 0
+        end
+    end
+
     local fontString, primaryLine = SetCompareRowText(tooltip, text, r, g, b)
     if not fontString then
         tooltip:AddLine(text, r, g, b)
         primaryLine = tooltip:NumLines()
         fontString = _G[tooltip:GetName() .. "TextLeft" .. primaryLine]
-    end
-    if arrowDir then
-        ShowLineArrow(tooltip, fontString, r, g, b, arrowDir == "down")
     end
 
     -- Secondary profile's verdict: rides the right column of the row
@@ -1951,21 +2140,16 @@ local function AddCompareLine(tooltip, link, bag, slot, invSlot, src)
     -- that right-column text so the whole group right-aligns as
     -- "Requires Level 17   Warden <arrow> +24%" (the label hugs the arrow —
     -- it does NOT go to the tooltip's left edge, and no new line is added).
-    -- Falls back to a bottom AddLine when there's no free row just below —
-    -- e.g. the primary itself fell back to AddLine (last line, nothing
-    -- under it) or that line already carries right-column text. Blue
-    -- everywhere so color reads as "the other profile"; arrow direction
-    -- carries up/down.
     local sec = result.secondary
+    local arrowDir2, fs2
+    local r2, g2, b2 = SEC_R, SEC_G, SEC_B
     if sec then
-        local text2, arrowDir2, r2, g2, b2 = nil, nil, SEC_R, SEC_G, SEC_B
+        local text2
         if sec.status == "empty" then
             text2 = sec.zeroBaseline and "Equipped scores 0" or "Fills empty slot"
             arrowDir2 = "up"
         elseif sec.status == "even" then
             if sec.zeroAll then
-                -- Profile values neither item: gray, not the profile's blue —
-                -- this is a non-verdict, like the armor-filter notice.
                 text2, r2, g2, b2 = "No value", 0.6, 0.6, 0.6
             else
                 text2 = "0%"
@@ -1973,31 +2157,17 @@ local function AddCompareLine(tooltip, link, bag, slot, invSlot, src)
         else
             text2 = string.format("%+.0f%%", sec.pct)
             arrowDir2 = sec.status == "upgrade" and "up" or "down"
+            if arrowDir2 == "down" then
+                r2, g2, b2 = 1, 0.25, 0.25
+            end
         end
-        -- Self-label with the secondary profile's spec name so "blue = the
-        -- other spec" needs no legend. Class-spec profiles read
-        -- "<Class> - <Spec>"; show just the spec half (the class is the same
-        -- character), and fall back to the whole name for custom profiles.
-        -- The label is folded INTO the row text (never an overlay fontstring:
-        -- GameTooltip sizes itself from line text only, so overlays clip
-        -- into long left-column rows).
+
         local secName = db.charSecondaryProfile[CharKey()]
         local label = secName and (secName:match("%- (.+)$") or secName)
-        local display, numW = text2, nil
+        local display = text2
         if label then
-            if not tooltip.refactorMeasure then
-                -- Unanchored measuring string (never rendered); same font
-                -- object as the tooltip's own text.
-                tooltip.refactorMeasure =
-                    tooltip:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-            end
             local measure = tooltip.refactorMeasure
             if arrowDir2 then
-                -- Gap holding the 12px arrow + margins, sized from the
-                -- font's measured space width (interior measurement — a
-                -- pure-space string can report a trimmed width), never a
-                -- fixed count: three GameTooltipText spaces are only ~10px
-                -- and the arrow overlapped the label.
                 measure:SetText("00")
                 local pair = measure:GetStringWidth() or 6
                 measure:SetText("0 0")
@@ -2005,24 +2175,28 @@ local function AddCompareLine(tooltip, link, bag, slot, invSlot, src)
                 if spaceW < 1 then spaceW = 3 end
                 display = label .. string.rep(" ", math.ceil(16 / spaceW)) .. text2
                 measure:SetText(text2)
-                numW = measure:GetStringWidth() or 0
+                w2 = measure:GetStringWidth() or 0
             else
                 display = label .. " " .. text2
             end
         end
-        local fs2 = primaryLine
-            and SetRowRightTextAt(tooltip, primaryLine + 1, display, r2, g2, b2)
+
+        fs2 = primaryLine and SetRowRightTextAt(tooltip, primaryLine + 1, display, r2, g2, b2)
         if not fs2 then
             tooltip:AddLine(display, r2, g2, b2)
             fs2 = _G[tooltip:GetName() .. "TextLeft" .. tooltip:NumLines()]
         end
-        if arrowDir2 then
-            -- Arrow between label and number: anchored off the fontstring's
-            -- RIGHT edge by the number's measured width, so it lands 2px
-            -- left of the % no matter how wide the label/gap rendered.
-            ShowLineArrow(tooltip, fs2, SEC_R, SEC_G, SEC_B, arrowDir2 == "down",
-                "refactorLineArrow2", numW and -(numW + 2) or nil)
-        end
+    end
+
+    -- Align both arrows to the maximum text width so they form a 100% straight vertical column
+    local maxW = math.max(w1, w2)
+    local sharedOffset = (maxW > 0) and -(maxW + 2) or nil
+
+    if arrowDir then
+        ShowLineArrow(tooltip, fontString, r, g, b, arrowDir == "down", "refactorLineArrow", sharedOffset)
+    end
+    if arrowDir2 and fs2 then
+        ShowLineArrow(tooltip, fs2, r2, g2, b2, arrowDir2 == "down", "refactorLineArrow2", sharedOffset)
     end
 
     tooltip:Show()
@@ -2070,6 +2244,20 @@ local function GetTooltipSource(tooltip, link)
     if ownerName and ownerName:match("^LootButton%d+$") and owner.slot then
         if GetLootSlotLink(owner.slot) == link then
             return nil, nil, nil, { lootSlot = owner.slot }
+        end
+        return nil, nil, nil, false
+    end
+
+    -- Vendor/merchant item buttons: SetMerchantItem / SetBuybackItem for scaled items.
+    if ownerName and ownerName:match("^MerchantItem%d+ItemButton$") then
+        local id = owner:GetID()
+        if id and id > 0 then
+            local isBuyback = MerchantFrame and MerchantFrame.selectedTab == 2
+            local mlink = isBuyback and (GetBuybackItemLink and GetBuybackItemLink(id))
+                or (GetMerchantItemLink and GetMerchantItemLink(id))
+            if mlink == link then
+                return nil, nil, nil, isBuyback and { buybackSlot = id } or { merchantSlot = id }
+            end
         end
         return nil, nil, nil, false
     end
@@ -2244,21 +2432,15 @@ local function GetBagArrow(button)
     if not arrow then
         arrow = button:CreateTexture(nil, "OVERLAY")
         arrow:SetWidth(14)
-        arrow:SetHeight(14)
+        arrow:SetHeight(16)
         arrow:SetPoint("TOPRIGHT", button, "TOPRIGHT", -1, -1)
-        if arrow:SetTexture(ARROW_TEXTURE) then
-            arrow:SetVertexColor(0, 1, 0)
-        else
-            arrow:SetTexture(0, 1, 0, 0.9)
-            arrow:SetWidth(10)
-            arrow:SetHeight(10)
-        end
+        SetArrowAtlas(arrow, "loottoast-arrow-green", 0, 1, 0)
         button.refactorArrow = arrow
     end
     return arrow
 end
 
--- Secondary profile's bag arrow: same texture, blue, opposite corner. Only
+-- Secondary profile's bag arrow: loottoast-arrow-blue texture, opposite corner. Only
 -- ever an UPGRADE marker (upgrades/empty slots) — downgrades get no arrow
 -- for either profile.
 local function GetBagArrow2(button)
@@ -2266,15 +2448,9 @@ local function GetBagArrow2(button)
     if not arrow then
         arrow = button:CreateTexture(nil, "OVERLAY")
         arrow:SetWidth(14)
-        arrow:SetHeight(14)
+        arrow:SetHeight(16)
         arrow:SetPoint("TOPLEFT", button, "TOPLEFT", 1, -1)
-        if arrow:SetTexture(ARROW_TEXTURE) then
-            arrow:SetVertexColor(SEC_R, SEC_G, SEC_B)
-        else
-            arrow:SetTexture(SEC_R, SEC_G, SEC_B, 0.9)
-            arrow:SetWidth(10)
-            arrow:SetHeight(10)
-        end
+        SetArrowAtlas(arrow, "loottoast-arrow-blue", SEC_R, SEC_G, SEC_B)
         button.refactorArrow2 = arrow
     end
     return arrow
@@ -2457,9 +2633,10 @@ end
 
 local UpdateQuestRewards -- defined in the quest-reward section below
 local StartRollUpdates -- defined in the loot-roll marker section below
+local UpdateMerchantArrows -- defined in the vendor marker section below
 
 -- Redraws every verdict-driven marker (stock and bag-addon slot buttons,
--- quest reward markers, roll-frame arrows) against the current memo
+-- quest reward markers, roll-frame arrows, vendor item buttons) against the current memo
 -- state. Invalidation is the caller's job: RefreshOpenBags for
 -- verdict-moving state changes, the bag-only flush below for single-bag
 -- churn.
@@ -2477,6 +2654,7 @@ local function RedrawBags()
     end
     if UpdateQuestRewards then UpdateQuestRewards() end
     if StartRollUpdates then StartRollUpdates() end
+    if UpdateMerchantArrows then UpdateMerchantArrows() end
 end
 
 -- Re-evaluate arrows on open bags when equipped gear changes (equipping
@@ -2518,15 +2696,9 @@ local function GetQuestArrow(button)
     if not arrow then
         arrow = button:CreateTexture(nil, "OVERLAY")
         arrow:SetWidth(14)
-        arrow:SetHeight(14)
+        arrow:SetHeight(16)
         arrow:SetPoint("TOPRIGHT", QuestItemIcon(button), "TOPRIGHT", 2, 2)
-        if arrow:SetTexture(ARROW_TEXTURE) then
-            arrow:SetVertexColor(0, 1, 0)
-        else
-            arrow:SetTexture(0, 1, 0, 0.9)
-            arrow:SetWidth(10)
-            arrow:SetHeight(10)
-        end
+        SetArrowAtlas(arrow, "loottoast-arrow-green", 0, 1, 0)
         button.refactorQuestArrow = arrow
     end
     return arrow
@@ -2765,15 +2937,9 @@ local function GetRollArrow(frame)
         local anchor = _G[frame:GetName() .. "IconFrame"] or frame
         arrow = anchor:CreateTexture(nil, "OVERLAY")
         arrow:SetWidth(14)
-        arrow:SetHeight(14)
+        arrow:SetHeight(16)
         arrow:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", 2, 2)
-        if arrow:SetTexture(ARROW_TEXTURE) then
-            arrow:SetVertexColor(0, 1, 0)
-        else
-            arrow:SetTexture(0, 1, 0, 0.9)
-            arrow:SetWidth(10)
-            arrow:SetHeight(10)
-        end
+        SetArrowAtlas(arrow, "loottoast-arrow-green", 0, 1, 0)
         frame.refactorRollArrow = arrow
     end
     return arrow
@@ -2846,6 +3012,111 @@ function StartRollUpdates()
         rollRetryElapsed = 0
         rollRetryFrame:Show()
     end
+end
+
+--------------------------------------------------------------------------
+-- Vendor/Merchant item upgrade markers
+--------------------------------------------------------------------------
+
+-- Green arrow on a vendor item button when the item is an upgrade —
+-- same promise as the bag/quest/roll arrows, same trust rules
+-- (live SetMerchantItem/SetBuybackItem scan via CompareItem's src, never approx).
+
+local function GetMerchantArrow(button)
+    local arrow = button.refactorMerchantArrow
+    if not arrow then
+        arrow = button:CreateTexture(nil, "OVERLAY")
+        arrow:SetWidth(14)
+        arrow:SetHeight(16)
+        arrow:SetPoint("TOPRIGHT", button, "TOPRIGHT", -1, -1)
+        SetArrowAtlas(arrow, "loottoast-arrow-green", 0, 1, 0)
+        button.refactorMerchantArrow = arrow
+    end
+    return arrow
+end
+
+local function UpdateMerchantArrowsNow()
+    local maxItems = MERCHANT_ITEMS_PER_PAGE or 10
+    if not (db and db.enabled and db.bagIcons and MerchantFrame and MerchantFrame:IsShown()) then
+        for i = 1, maxItems do
+            local button = _G["MerchantItem" .. i .. "ItemButton"]
+            if button and button.refactorMerchantArrow then
+                button.refactorMerchantArrow:Hide()
+            end
+        end
+        return true
+    end
+
+    local complete = true
+    local isBuyback = MerchantFrame.selectedTab == 2
+    local page = MerchantFrame.page or 1
+
+    for i = 1, maxItems do
+        local button = _G["MerchantItem" .. i .. "ItemButton"]
+        if button then
+            local show = false
+            local index = ((page - 1) * maxItems) + i
+            local link
+            if isBuyback then
+                link = GetBuybackItemLink and GetBuybackItemLink(index)
+            else
+                link = GetMerchantItemLink and GetMerchantItemLink(index)
+            end
+
+            if link then
+                local name, equipLoc
+                local n, _, _, _, _, _, _, _, e = GetItemInfo(link)
+                name, equipLoc = n, e
+                if not name then
+                    complete = false
+                elseif equipLoc and SLOTS_FOR_INVTYPE[equipLoc] then
+                    local src = isBuyback and { buybackSlot = index } or { merchantSlot = index }
+                    local result = CompareItem(link, nil, nil, nil, src)
+                    if not result then
+                        complete = false
+                    elseif not result.approx
+                        and (result.status == "upgrade" or result.status == "empty") then
+                        show = true
+                    end
+                end
+            end
+
+            if show then
+                GetMerchantArrow(button):Show()
+            elseif button.refactorMerchantArrow then
+                button.refactorMerchantArrow:Hide()
+            end
+        end
+    end
+
+    return complete
+end
+
+local merchantRetryFrame = CreateFrame("Frame")
+merchantRetryFrame:Hide()
+local merchantRetryElapsed, merchantRetriesLeft = 0, 0
+merchantRetryFrame:SetScript("OnUpdate", function(self, elapsed)
+    merchantRetryElapsed = merchantRetryElapsed + elapsed
+    if merchantRetryElapsed < 0.25 then return end
+    merchantRetryElapsed = 0
+    merchantRetriesLeft = merchantRetriesLeft - 1
+    if UpdateMerchantArrowsNow() or merchantRetriesLeft <= 0 then
+        self:Hide()
+    end
+end)
+
+function UpdateMerchantArrows()
+    if UpdateMerchantArrowsNow() then
+        merchantRetryFrame:Hide()
+    else
+        merchantRetriesLeft = 8
+        merchantRetryElapsed = 0
+        merchantRetryFrame:Show()
+    end
+end
+
+if type(MerchantFrame_Update) == "function" then
+    hooksecurefunc("MerchantFrame_Update", UpdateMerchantArrows)
 end
 
 --------------------------------------------------------------------------
@@ -3075,9 +3346,55 @@ local function DeleteProfile(name)
     end
 end
 
+-- Hit-cap mode setter for the config window / slash: "off" | "melee" |
+-- "ranged" | "spell", stored per profile. Bumps the memo generation so
+-- open tooltips and bag arrows re-score against the cap immediately.
+local function SetHitCapMode(mode)
+    if mode ~= "melee" and mode ~= "ranged" and mode ~= "spell" then mode = "off" end
+    local p = ActiveProfile()
+    p.hitCap = p.hitCap or {}
+    p.hitCap.mode = mode
+    RefreshOpenBags()
+    RefreshConfig()
+    return mode
+end
+
+local function SetHitCapPvP(enabled)
+    local p = ActiveProfile()
+    p.hitCap = p.hitCap or {}
+    p.hitCap.pvp = enabled and true or nil
+    RefreshOpenBags()
+    RefreshConfig()
+end
+
 RefactorCompareShared.SaveProfileAs = SaveProfileAs
 RefactorCompareShared.DeleteProfile = DeleteProfile
 RefactorCompareShared.SetSecondaryProfile = SetSecondaryProfile
+RefactorCompareShared.SetHitCapMode = SetHitCapMode
+RefactorCompareShared.GetHitCapMode = function()
+    return HitCapMode(ActiveProfile())
+end
+RefactorCompareShared.SetHitCapPvP = SetHitCapPvP
+RefactorCompareShared.GetHitCapPvP = function()
+    return HitCapPvP(ActiveProfile())
+end
+-- Live readout for the config window: current hit rating, the cap rating, and
+-- the target %. cap is nil when the rating→% ratio isn't derivable yet (no hit
+-- worn and none cached) — the UI shows "—" then.
+RefactorCompareShared.HitCapInfo = function()
+    local p = ActiveProfile()
+    local mode = HitCapMode(p)
+    if mode == "off" then return { mode = "off" } end
+    local pvp = HitCapPvP(p)
+    local cap = HitCapRating(p)
+    local ratio = HitRatingPerPct(mode)
+    local activePct = pvp and HITCAP_PCT_PVP[mode] or HITCAP_PCT[mode]
+    local refPct = pvp and HITCAP_PCT[mode] or HITCAP_PCT_PVP[mode]
+    local refCap = ratio and (refPct * ratio) or nil
+    return { mode = mode, pvp = pvp, current = CurrentHitRating(mode),
+        cap = cap, pct = activePct,
+        refCap = refCap, refPct = refPct }
+end
 -- Raw saved pick (name or nil) for the config window's dropdown display;
 -- unlike SecondaryProfile() this reports the setting even while it names
 -- the active profile or a deleted one.
@@ -3222,6 +3539,29 @@ SlashCmdList.REFACTORCOMPARE = function(msg)
         else
             SetSecondaryProfile(name)
         end
+    elseif cmd == "hitcap" then
+        local mode = rest:match("^%s*(%S*)"):lower()
+        if mode == "pvp" then
+            local p = ActiveProfile()
+            SetHitCapPvP(not HitCapPvP(p))
+            local pvp = HitCapPvP(ActiveProfile())
+            Print("hit cap target: " .. (pvp and "PvP (never miss a player)"
+                or "PvE (never miss a raid boss)") .. ".")
+        elseif mode == "off" or mode == "melee" or mode == "ranged" or mode == "spell" then
+            SetHitCapMode(mode)
+            if mode == "off" then
+                Print("hit cap off for profile '" .. db.activeProfile .. "'.")
+            else
+                local info = RefactorCompareShared.HitCapInfo()
+                local target = info.pvp and "PvP" or "PvE"
+                Print("hit cap set to " .. mode .. " " .. target .. " (" .. (info.pct or "?") .. "%) for profile '"
+                    .. db.activeProfile .. "'"
+                    .. (info.cap and (": " .. info.current .. "/" .. math.floor(info.cap + 0.5) .. " rating")
+                        or " (cap unknown until you have some hit)") .. ".")
+            end
+        else
+            Print("usage: /rfc hitcap <off|melee|ranged|spell|pvp>")
+        end
     elseif cmd == "profile" then
         local sub, name = rest:match("^(%S*)%s*(.-)$")
         local subl = sub:lower()
@@ -3252,7 +3592,7 @@ SlashCmdList.REFACTORCOMPARE = function(msg)
             Print("usage: /rfc profile <name> | save <name> | delete <name> | list")
         end
     else
-        Print("commands: /rfc (config), toggle, alert, bagicons, auto, debug, quality <n>, weight <stat> <n>, profile ..., secondary <name|off>")
+        Print("commands: /rfc (config), toggle, alert, bagicons, auto, debug, quality <n>, weight <stat> <n>, hitcap <off|melee|ranged|spell|pvp>, profile ..., secondary <name|off>")
     end
 end
 
@@ -3334,6 +3674,8 @@ eventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
 eventFrame:RegisterEvent("BAG_UPDATE")
 eventFrame:RegisterEvent("PLAYER_LEVEL_UP")
 eventFrame:RegisterEvent("START_LOOT_ROLL")
+eventFrame:RegisterEvent("MERCHANT_SHOW")
+eventFrame:RegisterEvent("MERCHANT_UPDATE")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
         -- Bagnon/DragonUI/AdiBags/ElvUI can load before or after this
@@ -3371,6 +3713,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         -- FrameXML's own handler opened the roll frame before this one
         -- runs (it registered first); mark the icon if it's an upgrade.
         StartRollUpdates()
+    elseif event == "MERCHANT_SHOW" or event == "MERCHANT_UPDATE" then
+        UpdateMerchantArrows()
     elseif event == "UNIT_INVENTORY_CHANGED" then
         if arg1 == "player" then
             invDirty = true

@@ -170,6 +170,19 @@ do
                 combatWatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
                 return
             end
+            WorldMapFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+            if WorldMapTooltip then
+                WorldMapTooltip:SetFrameStrata("TOOLTIP")
+                WorldMapTooltip:SetFrameLevel(2000)
+            end
+            if WorldMapCompareTooltip1 then
+                WorldMapCompareTooltip1:SetFrameStrata("TOOLTIP")
+                WorldMapCompareTooltip1:SetFrameLevel(2000)
+            end
+            if WorldMapCompareTooltip2 then
+                WorldMapCompareTooltip2:SetFrameStrata("TOOLTIP")
+                WorldMapCompareTooltip2:SetFrameLevel(2000)
+            end
             if Windowized() then
                 local db = FMDB()
                 local s = db and db.scale or DEFAULT_SCALE
@@ -300,6 +313,13 @@ do
         hooksecurefunc("WorldMap_ToggleSizeUp", Apply)
         hooksecurefunc("WorldMap_ToggleSizeDown", Apply)
         WorldMapFrame:HookScript("OnShow", Apply)
+
+        if WorldMapTooltip then
+            WorldMapTooltip:HookScript("OnShow", function(self)
+                self:SetFrameStrata("TOOLTIP")
+                self:SetFrameLevel(2000)
+            end)
+        end
 
         -- The panel slot must be right BEFORE the first ShowUIPanel, not
         -- fixed up during it (OnShow is too late — a "full" open has

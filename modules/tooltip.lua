@@ -14,9 +14,20 @@ local TOOLTIP_CURSOR_OFFSET_X = 18 -- gap between cursor and tooltip's left edge
 -- etc.). Hooking it only affects those; tooltips a frame explicitly anchors
 -- elsewhere are left alone.
 hooksecurefunc("GameTooltip_SetDefaultAnchor", function(tooltip, parent)
-    -- When disabled, the original function's default anchoring (which ran
-    -- just before this post-hook) is left untouched.
-    if not Qol("cursorTooltip") then return end
+    if not Qol("cursorTooltip") then
+        -- Stock GameTooltip_SetDefaultAnchor never ClearAllPoints — it just
+        -- SetPoints one corner, trusting no other anchor point is set. Our
+        -- cursor mode leaves a BOTTOMLEFT point behind; left alone, the next
+        -- native SetPoint stacks a second point onto it instead of replacing
+        -- it, stretching/misplacing the tooltip. Clean up once, then let the
+        -- real function re-anchor natively.
+        if tooltip.refactorCursorAnchor then
+            tooltip.refactorCursorAnchor = nil
+            tooltip:ClearAllPoints()
+            GameTooltip_SetDefaultAnchor(tooltip, parent)
+        end
+        return
+    end
     -- ANCHOR_CURSOR on this client centers the tooltip on the cursor and
     -- doesn't follow it, so use ANCHOR_NONE and position it ourselves.
     tooltip:SetOwner(parent, "ANCHOR_NONE")
@@ -45,11 +56,12 @@ local UNIT_CHECK_INTERVAL = 0.1
 local unitCheckElapsed = 0
 
 GameTooltip:HookScript("OnUpdate", function(self, elapsed)
-    if self.refactorCursorAnchor then
-        PositionAtCursor(self) -- per-frame: the cursor follow must be smooth
-    end
+    if not self.refactorCursorAnchor then return end
+    PositionAtCursor(self) -- per-frame: the cursor follow must be smooth
     -- The client fades unit tooltips out from C code (a Lua hook on FadeOut
     -- never fires), so detect the lost mouseover ourselves and hide instantly.
+    -- Only needed in cursor-follow mode (fade fighting the follow position);
+    -- natively, the tooltip should still hold and fade like stock.
     unitCheckElapsed = unitCheckElapsed + elapsed
     if unitCheckElapsed < UNIT_CHECK_INTERVAL then return end
     unitCheckElapsed = 0

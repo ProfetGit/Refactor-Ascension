@@ -2,20 +2,8 @@
 -- World map scroll-to-zoom/click-drag-pan and class-colored party/raid map
 -- icons, ported directly from the working Magnify-WotLK addon into Refactor.
 
--- Shim IsAddOnLoaded so Questie, HereBeDragons, and other map icon libraries
--- know a map zoom addon is active and parent their pins to WorldMapButton.
--- NOTE: orig_IsAddOnLoaded must be file-scoped — the Leatrix Maps stand-down
--- check in InitRefactorMap() and the loader check at the bottom of this file
--- both depend on it. Declaring it inside the `if` block silently nils those.
+-- Safe reference to IsAddOnLoaded without global scope mutation
 local orig_IsAddOnLoaded = IsAddOnLoaded
-if orig_IsAddOnLoaded then
-    function IsAddOnLoaded(name, ...)
-        if name == "Magnify-WotLK" or name == "Magnify" then
-            return true, true
-        end
-        return orig_IsAddOnLoaded(name, ...)
-    end
-end
 
 local function InitRefactorMap()
     if not (WorldMapFrame and WorldMapDetailFrame
@@ -53,10 +41,17 @@ local function InitRefactorMap()
 
     local coordsFrame = CreateFrame("Frame", nil, WorldMapFrame)
     coordsFrame:SetFrameLevel((WORLDMAP_POI_FRAMELEVEL or 10) + 20)
+    -- Anchored to the map VIEWPORT, not WorldMapFrame. WorldMapFrame is the
+    -- whole shell — in fullscreen mode its bottom is under the quest
+    -- log/detail panel, so BOTTOMLEFT/BOTTOMRIGHT of it put the readouts on
+    -- top of the quest text and the Show Quest Objectives checkbox.
+    -- WorldMapScrollFrame is the visible map rectangle in every mode
+    -- (fullscreen, mini, and the fullMapWindow tweak), so this follows mode
+    -- switches with no re-anchoring.
     local playerCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    playerCoords:SetPoint("BOTTOMLEFT", WorldMapFrame, "BOTTOMLEFT", 20, 10)
+    playerCoords:SetPoint("BOTTOMLEFT", WorldMapScrollFrame, "BOTTOMLEFT", 20, 10)
     local cursorCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    cursorCoords:SetPoint("BOTTOMRIGHT", WorldMapFrame, "BOTTOMRIGHT", -20, 10)
+    cursorCoords:SetPoint("BOTTOMRIGHT", WorldMapScrollFrame, "BOTTOMRIGHT", -20, 10)
 
     local function CursorMapPosition()
         local left, top = WorldMapDetailFrame:GetLeft(), WorldMapDetailFrame:GetTop()
@@ -412,7 +407,6 @@ local function InitRefactorMap()
         end
 
         if WorldMapFrame.backdrop then
-            WorldMapFrame.backdrop.Point = function() return end
             WorldMapFrame.backdrop:ClearAllPoints()
             if WorldMapZoneMinimapDropDown:IsVisible() then
                 WorldMapFrame.backdrop:SetPoint("TOPLEFT", WorldMapZoneMinimapDropDown, "TOPLEFT", -20, 40)
@@ -431,6 +425,20 @@ local function InitRefactorMap()
             return
         end
         setupDeferred = nil
+
+        WorldMapFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+        if WorldMapTooltip then
+            WorldMapTooltip:SetFrameStrata("TOOLTIP")
+            WorldMapTooltip:SetFrameLevel(2000)
+        end
+        if WorldMapCompareTooltip1 then
+            WorldMapCompareTooltip1:SetFrameStrata("TOOLTIP")
+            WorldMapCompareTooltip1:SetFrameLevel(2000)
+        end
+        if WorldMapCompareTooltip2 then
+            WorldMapCompareTooltip2:SetFrameStrata("TOOLTIP")
+            WorldMapCompareTooltip2:SetFrameLevel(2000)
+        end
 
         local scrollBar = _G["WorldMapScrollFrameScrollBar"]
         if scrollBar then scrollBar:Hide() end
@@ -598,49 +606,50 @@ local function InitRefactorMap()
             if WorldMapPlayer.texture then WorldMapPlayer.texture:Hide() end
         end
 
-        -- Party/raid dot repositioning and class coloring: up to two O(40)
-        -- unit scans, the expensive half of this function. Only these are
-        -- throttled (~20 Hz) — nothing here fights a stock per-frame Show(),
-        -- so a slower clock is invisible on moving group dots.
-        mapUpdateAccum = mapUpdateAccum + (elapsed or 0)
-        if mapUpdateAccum < 0.05 then return end
-        mapUpdateAccum = 0
-
+        -- Group dot positions follow the SAME rule as the player arrow above:
+        -- per-frame, never throttled, never gated. The stock WorldMapButton
+        -- OnUpdate (called as the original handler) re-points every
+        -- WorldMapParty*/WorldMapRaid* frame every frame using math that
+        -- assumes WorldMapDetailFrame scale 1 — but SetDetailFrameScale gives
+        -- those frames SetScale(1/detailScale), so under zoom stock's offsets
+        -- land off by scale² and the dot flies off the map. Correcting on a
+        -- 20 Hz clock meant stock won two frames out of three: that was the
+        -- reported flicker + "icons outside the map when zoomed in". The
+        -- correction must overwrite stock in the same frame stock wrote.
+        --
+        -- Not gated on WorldMapScrollFrame.zoomedIn either: that flag is only
+        -- assigned in the mousewheel/mouseup handlers, so a zoom restored by
+        -- SetupWorldMapFrame (PreviousState.scale) leaves it false and the
+        -- dots stay pinned at stock's wrong point. At scale 1 this math is
+        -- identical to stock's, so running unconditionally costs nothing.
         local detailWidth = WorldMapDetailFrame:GetWidth()
         local detailHeight = WorldMapDetailFrame:GetHeight()
         local scale = WorldMapDetailFrame:GetScale()
 
-        if WorldMapScrollFrame.zoomedIn then
-            if GetNumRaidMembers() == 0 then
-                for i = 1, MAX_PARTY_MEMBERS do
-                    local unit = "party" .. i
-                    if UnitExists(unit) then
-                        local icon = _G["WorldMapParty" .. i]
-                        if icon then
-                            local x, y = GetPlayerMapPosition(unit)
-                            if x > 0 and y > 0 then
-                                icon:ClearAllPoints()
-                                icon:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", x * detailWidth * scale, -y * detailHeight * scale)
-                            end
-                        end
-                    end
-                end
-            else
-                for i = 1, MAX_RAID_MEMBERS do
-                    local unit = "raid" .. i
-                    if UnitExists(unit) then
-                        local icon = _G["WorldMapRaid" .. i]
-                        if icon then
-                            local x, y = GetPlayerMapPosition(unit)
-                            if x > 0 and y > 0 then
-                                icon:ClearAllPoints()
-                                icon:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", x * detailWidth * scale, -y * detailHeight * scale)
-                            end
-                        end
+        local isRaid = GetNumRaidMembers() > 0
+        local prefix = isRaid and "WorldMapRaid" or "WorldMapParty"
+        local unitPrefix = isRaid and "raid" or "party"
+        local numMembers = isRaid and MAX_RAID_MEMBERS or MAX_PARTY_MEMBERS
+
+        for i = 1, numMembers do
+            local icon = _G[prefix .. i]
+            if icon and icon:IsShown() then
+                local unit = (isRaid and icon.unit) or (unitPrefix .. i)
+                if unit and UnitExists(unit) then
+                    local x, y = GetPlayerMapPosition(unit)
+                    if x and y and x > 0 and y > 0 then
+                        icon:ClearAllPoints()
+                        icon:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", x * detailWidth * scale, -y * detailHeight * scale)
                     end
                 end
             end
         end
+
+        -- Class coloring is idempotent and fights nothing per-frame, so it
+        -- keeps the slower clock — this is the expensive O(40) half.
+        mapUpdateAccum = mapUpdateAccum + (elapsed or 0)
+        if mapUpdateAccum < 0.05 then return end
+        mapUpdateAccum = 0
 
         if Qol("mapClassIcons") then
             if GetNumRaidMembers() == 0 then
@@ -759,7 +768,8 @@ local function InitRefactorMap()
     WorldMapFrameAreaFrame:SetFrameLevel(WORLDMAP_POI_FRAMELEVEL or 10)
     WorldMapFrameAreaFrame:SetPoint("TOP", WorldMapScrollFrame, "TOP", 0, -10)
 
-    WorldMapPing.Show = function() return end
+    WorldMapPing:Hide()
+    WorldMapPing:SetScript("OnShow", WorldMapPing.Hide)
     WorldMapPing:SetModelScale(0)
 
     WorldMapPlayer.Icon = WorldMapPlayer:CreateTexture(nil, "ARTWORK")
@@ -772,11 +782,11 @@ local function InitRefactorMap()
 
     if PlayerArrowFrame then
         PlayerArrowFrame:Hide()
-        PlayerArrowFrame.Show = function() end
+        PlayerArrowFrame:SetScript("OnShow", PlayerArrowFrame.Hide)
     end
     if PlayerArrowEffectFrame then
         PlayerArrowEffectFrame:Hide()
-        PlayerArrowEffectFrame.Show = function() end
+        PlayerArrowEffectFrame:SetScript("OnShow", PlayerArrowEffectFrame.Hide)
     end
 
     hooksecurefunc("WorldMapFrame_SetFullMapView", SetupWorldMapFrame)

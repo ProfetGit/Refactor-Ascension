@@ -22,6 +22,9 @@ local QOL_DEFAULTS = {
     questAccept = false,   -- auto-accept quest offers and escort confirmations
     questTurnIn = false,   -- auto-complete quests (multi-choice rewards stay open)
     questGossip = false,   -- auto-pick quest entries from NPC gossip menus
+    -- Picking a quest reward is irreversible, so this ships off and refuses
+    -- to act on anything it can't fully read (see modules/quest.lua).
+    questAutoReward = false, -- auto-pick the best reward choice (upgrade, else most gold)
     fullMapWindow = false, -- fullscreen map as a movable window (no blackout)
     mapZoom = true,        -- scroll to zoom/pan the world map (RefactorMap.lua)
     mapClassIcons = true,  -- class-colored party/raid icons on the world map
