@@ -697,7 +697,15 @@ local function SkinMinimalScrollbar(scroll)
         capBot:SetPoint("CENTER", thumb, "BOTTOM", 0, 0)
         -- The engine hides the thumb when the content fits; the caps
         -- anchored to it must follow (textures have no OnHide script).
-        sb:HookScript("OnUpdate", function()
+        -- Polled rather than event-driven because the engine hides the
+        -- ThumbTexture directly and textures carry no OnHide script. 10 Hz
+        -- is plenty for a cosmetic cap follow — at 60 Hz this was two C
+        -- calls per frame per scrollbar for as long as the window was open.
+        local capAccum = 0
+        sb:HookScript("OnUpdate", function(_, elapsed)
+            capAccum = capAccum + (elapsed or 0)
+            if capAccum < 0.1 then return end
+            capAccum = 0
             local show = thumb:IsShown() and true or false
             if (capTop:IsShown() and true or false) ~= show then
                 if show then capTop:Show() capBot:Show()
