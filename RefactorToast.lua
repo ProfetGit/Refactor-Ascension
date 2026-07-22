@@ -19,6 +19,7 @@ local TOAST_WIDTH = 260
 local TOAST_HEIGHT = 44
 local TOAST_GAP = 4
 local MAX_ACTIVE = 5          -- on-screen at once; extras queue up
+local MAX_OVERFLOW = 20       -- queue ceiling; past it the oldest entry is dropped
 local SLIDE_IN_TIME = 0.25
 local SLIDE_IN_DIST = 24      -- pixels the toast slides in from the right
 local HOLD_TIME = 3.5
@@ -426,6 +427,15 @@ end
 -- value = total worth of the stack in copper (nil = unknown, show nothing).
 SpawnToast = function(data)
     if #active >= MAX_ACTIVE then
+        -- The queue drains at roughly MAX_ACTIVE per holdTime (~1 toast a
+        -- second). AoE farming and mass container-opening produce loot far
+        -- faster than that, and with no ceiling the backlog grew unbounded —
+        -- both a memory cost and a UX one, since the player ends up watching
+        -- toasts for loot from minutes ago. Past the cap, drop the OLDEST
+        -- queued entry: the newest loot is the one still worth showing.
+        if #overflow >= MAX_OVERFLOW then
+            tremove(overflow, 1)
+        end
         tinsert(overflow, data)
         return
     end
