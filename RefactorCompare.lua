@@ -1509,13 +1509,29 @@ local HITCAP_PCT_PVP   = { melee = 5, ranged = 5, spell = 4 }  -- % vs a player 
 local function HitCapMode(profile)
     local hc = profile and profile.hitCap
     local mode = hc and hc.mode
-    if mode == "melee" or mode == "ranged" or mode == "spell" then return mode end
+    if mode == "melee" or mode == "ranged" or mode == "spell" or mode == "custom" then return mode end
     return "off"
 end
 
 local function HitCapPvP(profile)
     local hc = profile and profile.hitCap
     return hc and hc.pvp or false
+end
+
+-- Combat-rating type (melee/ranged/spell) used to index HITCAP_INDEX/
+-- HITCAP_PCT and to read the player's current rating. For "custom" mode
+-- this is a separate per-profile choice (the player still needs to say
+-- which combat table their typed rating targets); every other mode IS its
+-- own type already.
+local function HitCapType(profile)
+    local mode = HitCapMode(profile)
+    if mode == "custom" then
+        local hc = profile and profile.hitCap
+        local t = hc and hc.customType
+        if t == "melee" or t == "ranged" or t == "spell" then return t end
+        return "melee"
+    end
+    return mode
 end
 
 -- Rating needed for 1% hit of this type, read LIVE from the game so it tracks
@@ -1544,6 +1560,12 @@ end
 local function HitCapRating(profile)
     local mode = HitCapMode(profile)
     if mode == "off" then return nil end
+    if mode == "custom" then
+        local hc = profile.hitCap
+        local rating = hc and hc.customRating
+        if not rating or rating <= 0 then return nil end
+        return rating, HitCapType(profile)
+    end
     local ratio = HitRatingPerPct(mode)
     if not ratio then return nil end
     local pctTable = HitCapPvP(profile) and HITCAP_PCT_PVP or HITCAP_PCT
@@ -3347,10 +3369,11 @@ local function DeleteProfile(name)
 end
 
 -- Hit-cap mode setter for the config window / slash: "off" | "melee" |
--- "ranged" | "spell", stored per profile. Bumps the memo generation so
--- open tooltips and bag arrows re-score against the cap immediately.
+-- "ranged" | "spell" | "custom", stored per profile. Bumps the memo
+-- generation so open tooltips and bag arrows re-score against the cap
+-- immediately.
 local function SetHitCapMode(mode)
-    if mode ~= "melee" and mode ~= "ranged" and mode ~= "spell" then mode = "off" end
+    if mode ~= "melee" and mode ~= "ranged" and mode ~= "spell" and mode ~= "custom" then mode = "off" end
     local p = ActiveProfile()
     p.hitCap = p.hitCap or {}
     p.hitCap.mode = mode
@@ -3367,6 +3390,30 @@ local function SetHitCapPvP(enabled)
     RefreshConfig()
 end
 
+-- Rating type "custom" mode targets — separate from the mode itself since
+-- the player still needs to say which combat table (melee/ranged/spell)
+-- their typed rating applies to.
+local function SetHitCapCustomType(type_)
+    if type_ ~= "melee" and type_ ~= "ranged" and type_ ~= "spell" then type_ = "melee" end
+    local p = ActiveProfile()
+    p.hitCap = p.hitCap or {}
+    p.hitCap.customType = type_
+    RefreshOpenBags()
+    RefreshConfig()
+end
+
+-- Player-typed target rating for "custom" mode — bypasses the built-in
+-- %→rating table entirely, so talent/racial flat-% hit (never counted by
+-- the fixed melee/ranged/spell % constants) can be folded in by hand.
+local function SetHitCapCustomRating(rating)
+    rating = tonumber(rating)
+    local p = ActiveProfile()
+    p.hitCap = p.hitCap or {}
+    p.hitCap.customRating = (rating and rating > 0) and rating or nil
+    RefreshOpenBags()
+    RefreshConfig()
+end
+
 RefactorCompareShared.SaveProfileAs = SaveProfileAs
 RefactorCompareShared.DeleteProfile = DeleteProfile
 RefactorCompareShared.SetSecondaryProfile = SetSecondaryProfile
@@ -3378,6 +3425,15 @@ RefactorCompareShared.SetHitCapPvP = SetHitCapPvP
 RefactorCompareShared.GetHitCapPvP = function()
     return HitCapPvP(ActiveProfile())
 end
+RefactorCompareShared.SetHitCapCustomType = SetHitCapCustomType
+RefactorCompareShared.GetHitCapCustomType = function()
+    return HitCapType(ActiveProfile())
+end
+RefactorCompareShared.SetHitCapCustomRating = SetHitCapCustomRating
+RefactorCompareShared.GetHitCapCustomRating = function()
+    local p = ActiveProfile()
+    return p.hitCap and p.hitCap.customRating
+end
 -- Live readout for the config window: current hit rating, the cap rating, and
 -- the target %. cap is nil when the rating→% ratio isn't derivable yet (no hit
 -- worn and none cached) — the UI shows "—" then.
@@ -3385,6 +3441,12 @@ RefactorCompareShared.HitCapInfo = function()
     local p = ActiveProfile()
     local mode = HitCapMode(p)
     if mode == "off" then return { mode = "off" } end
+    if mode == "custom" then
+        -- No fixed %/PvE-PvP pair to report here — the player typed the
+        -- rating directly, so just the current/cap rating readout applies.
+        local type_ = HitCapType(p)
+        return { mode = mode, current = CurrentHitRating(type_), cap = HitCapRating(p) }
+    end
     local pvp = HitCapPvP(p)
     local cap = HitCapRating(p)
     local ratio = HitRatingPerPct(mode)

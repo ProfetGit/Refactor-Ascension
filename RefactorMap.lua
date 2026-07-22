@@ -558,6 +558,8 @@ local function InitRefactorMap()
 
     local mapUpdateAccum = 0
     local mapIconSyncAccum = 0
+    local mapUnitTooltipShown = false
+    local mapUnitTooltipAnchor = nil
     local function WorldMapButton_OnUpdate(self, elapsed)
         if not Qol("mapZoom") and not Qol("mapClassIcons") then return end
 
@@ -624,6 +626,21 @@ local function InitRefactorMap()
         local unitPrefix = isRaid and "raid" or "party"
         local numMembers = isRaid and MAX_RAID_MEMBERS or MAX_PARTY_MEMBERS
 
+        -- Name-on-hover tooltip for the dots: stock's own WorldMapUnit_OnEnter
+        -- never fires here because reparenting every full-map frame onto
+        -- WorldMapDetailFrame as flat siblings (SetupWorldMapFrame, above)
+        -- collapses the sibling group the dots' frame level was computed
+        -- relative to, so something else in that group now wins native mouse
+        -- focus over them. Rather than chase that focus-priority fight (this
+        -- file is exactly the kind of frame-level/z-order code past commits
+        -- have silently broken), IsMouseOver() is a pure bounding-box test
+        -- unaffected by focus-stealing, so it's checked directly in the same
+        -- per-frame pass that already repositions every dot. Reuses the
+        -- stock WorldMapTooltip object (its strata/level is already forced
+        -- above the windowed map by this file, above) and only closes a
+        -- tooltip this code itself opened, so it never fights anything else
+        -- that might legitimately own WorldMapTooltip.
+        local hoveredNames = nil
         for i = 1, numMembers do
             local icon = _G[prefix .. i]
             if icon and icon:IsShown() then
@@ -635,7 +652,26 @@ local function InitRefactorMap()
                         icon:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", x * detailWidth * scale, -y * detailHeight * scale)
                     end
                 end
+                if icon:IsMouseOver() then
+                    local label = icon.name or (icon.unit and UnitName(icon.unit))
+                    if label then
+                        hoveredNames = hoveredNames and (hoveredNames .. "\n" .. label) or label
+                        mapUnitTooltipAnchor = icon
+                    end
+                end
             end
+        end
+
+        if hoveredNames then
+            local cx = mapUnitTooltipAnchor:GetCenter()
+            local px = WorldMapDetailFrame:GetCenter()
+            WorldMapTooltip:SetOwner(mapUnitTooltipAnchor, (cx and px and cx > px) and "ANCHOR_LEFT" or "ANCHOR_RIGHT")
+            WorldMapTooltip:SetText(hoveredNames)
+            WorldMapTooltip:Show()
+            mapUnitTooltipShown = true
+        elseif mapUnitTooltipShown then
+            WorldMapTooltip:Hide()
+            mapUnitTooltipShown = false
         end
 
         -- Class coloring is idempotent and fights nothing per-frame, so it

@@ -1342,13 +1342,13 @@ local function BuildWeightsPage()
         "hit X/Y display.", 0, y, INNER_W)
     y = y - 34
 
-    local HITCAP_LABELS = { off = "Off", melee = "Melee (8%)", ranged = "Ranged (8%)", spell = "Spell (17%)" }
+    local HITCAP_LABELS = { off = "Off", melee = "Melee (8%)", ranged = "Ranged (8%)", spell = "Spell (17%)", custom = "Custom" }
     local hcDD = MakeDropdown(child, 160)
     hcDD:SetPoint("TOPLEFT", 0, y)
     hcDD.itemsFn = function()
         local cur = (shared.GetHitCapMode and shared.GetHitCapMode()) or "off"
         local items = {}
-        for _, m in ipairs({ "off", "melee", "ranged", "spell" }) do
+        for _, m in ipairs({ "off", "melee", "ranged", "spell", "custom" }) do
             tinsert(items, {
                 text = HITCAP_LABELS[m],
                 checked = (cur == m),
@@ -1380,9 +1380,14 @@ local function BuildWeightsPage()
         "PvP cap — use it if you're gearing for PvP and want to stop valuing " ..
         "hit past the lower PvP number.\n\n" ..
         "The cap rating is read live from the game, so it tracks your level.\n\n" ..
+        "|cffffd200Custom|r: type your own target rating directly, skipping the " ..
+        "%→rating conversion above — use this if talent or racial flat-% hit " ..
+        "means your real cap is lower than the built-in number. Still needs a " ..
+        "melee/ranged/spell pick below, since the same rating converts to a " ..
+        "different % for each.\n\n" ..
         "|cffff8060Note: only counts hit from gear (rating), matching the character " ..
-        "sheet's X/Y number - talent and racial hit isn't included. Compares against " ..
-        "your currently equipped gear.|r")
+        "sheet's X/Y number - talent and racial hit isn't included by the built-in " ..
+        "percentages. Compares against your currently equipped gear.|r")
 
     local hcReadout = child:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     hcReadout:SetPoint("TOPLEFT", 172, y - 6)
@@ -1415,7 +1420,74 @@ local function BuildWeightsPage()
         function() return shared.GetHitCapPvP and shared.GetHitCapPvP() or false end,
         function(v) if shared.SetHitCapPvP then shared.SetHitCapPvP(v) end; RefreshBags(); RefactorUI.Refresh() end,
         nil,
-        function() return (shared.GetHitCapMode and shared.GetHitCapMode() or "off") ~= "off" end))
+        function()
+            local m = shared.GetHitCapMode and shared.GetHitCapMode() or "off"
+            return m ~= "off" and m ~= "custom"
+        end))
+    y = y - 30
+
+    -- Custom mode: a type picker (still needed for the rating conversion)
+    -- plus the target rating itself, typed directly.
+    local HITCAP_TYPE_LABELS = { melee = "Melee", ranged = "Ranged", spell = "Spell" }
+    local hcTypeLabel = SmallText(child, "Type", 0, y, 40)
+    p:Track(hcTypeLabel)
+    hcTypeLabel.Refresh = function(self)
+        local shown = (shared.GetHitCapMode and shared.GetHitCapMode()) == "custom"
+        if shown then self:Show() else self:Hide() end
+    end
+
+    local hcTypeDD = MakeDropdown(child, 100)
+    hcTypeDD:SetPoint("TOPLEFT", 40, y + 12)
+    hcTypeDD.itemsFn = function()
+        local cur = (shared.GetHitCapCustomType and shared.GetHitCapCustomType()) or "melee"
+        local items = {}
+        for _, t in ipairs({ "melee", "ranged", "spell" }) do
+            tinsert(items, {
+                text = HITCAP_TYPE_LABELS[t],
+                checked = (cur == t),
+                func = function()
+                    if shared.SetHitCapCustomType then shared.SetHitCapCustomType(t) end
+                    RefreshBags()
+                    RefactorUI.Refresh()
+                end,
+            })
+        end
+        return items
+    end
+    hcTypeDD.Refresh = function(self)
+        local shown = (shared.GetHitCapMode and shared.GetHitCapMode()) == "custom"
+        if shown then self:Show() else self:Hide() end
+        if shown then
+            local cur = (shared.GetHitCapCustomType and shared.GetHitCapCustomType()) or "melee"
+            self:SetText(HITCAP_TYPE_LABELS[cur] or "Melee")
+        end
+    end
+    p:Track(hcTypeDD)
+    Explain(hcTypeDD.click, "Custom cap type",
+        "Which combat table your typed rating targets — the same rating converts " ..
+        "to a different hit % for melee, ranged, and spell.")
+
+    local hcRatingLabel = SmallText(child, "Target rating", 148, y, 84)
+    p:Track(hcRatingLabel)
+    hcRatingLabel.Refresh = function(self)
+        local shown = (shared.GetHitCapMode and shared.GetHitCapMode()) == "custom"
+        if shown then self:Show() else self:Hide() end
+    end
+
+    local hcRatingEdit = MakeEdit(child, 60,
+        function() return shared.GetHitCapCustomRating and shared.GetHitCapCustomRating() end,
+        function(v) if shared.SetHitCapCustomRating then shared.SetHitCapCustomRating(v) end; RefreshBags(); RefactorUI.Refresh() end)
+    hcRatingEdit:SetPoint("TOPLEFT", 236, y + 12)
+    local hcRatingRefreshBase = hcRatingEdit.Refresh
+    hcRatingEdit.Refresh = function(self)
+        local shown = (shared.GetHitCapMode and shared.GetHitCapMode()) == "custom"
+        if shown then self:Show() else self:Hide() end
+        if shown then hcRatingRefreshBase(self) end
+    end
+    p:Track(hcRatingEdit)
+    Explain(hcRatingEdit, "Target rating",
+        "Your own hit-rating cap, computed with talents/racials already folded in. " ..
+        "0 or blank = cap unknown (treated the same as off until you set it).")
     y = y - 30
 
     -- Weight grid ----------------------------------------------------------
