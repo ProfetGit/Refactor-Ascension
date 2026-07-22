@@ -33,6 +33,47 @@ local FALLBACK_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local SOLID = "Interface\\ChatFrame\\ChatFrameBackground" -- tintable solid
 local ACCENT = { 0.20, 1.00, 0.60 } -- the addon's chat-message green
 
+local LOOT_TOAST_ATLAS = "Interface\\LootFrame\\LootToastAtlas"
+
+local ATLAS_COORDS = {
+    ["loottoast-arrow-green"] = { left = 0.858398, right = 0.878906, top = 0.158203, bottom = 0.207031 },
+    ["loottoast-arrow-blue"]  = { left = 0.835938, right = 0.856445, top = 0.158203, bottom = 0.207031 },
+}
+
+local function SetArrowAtlas(arrow, atlasName, fallbackR, fallbackG, fallbackB)
+    local coords = ATLAS_COORDS[atlasName]
+    if coords then
+        if arrow:SetTexture(LOOT_TOAST_ATLAS) then
+            arrow:SetTexCoord(coords.left, coords.right, coords.top, coords.bottom)
+            arrow:SetVertexColor(1, 1, 1)
+            return true
+        end
+    end
+    if arrow.SetAtlas then
+        local ok = pcall(arrow.SetAtlas, arrow, atlasName)
+        if ok then
+            arrow:SetVertexColor(1, 1, 1)
+            arrow:SetTexCoord(0, 1, 0, 1)
+            return true
+        end
+    end
+    local info = GetAtlasInfo and GetAtlasInfo(atlasName)
+    if info then
+        arrow:SetTexture(info.file)
+        arrow:SetTexCoord(info.leftTexCoord, info.rightTexCoord, info.topTexCoord, info.bottomTexCoord)
+        arrow:SetVertexColor(1, 1, 1)
+        return true
+    end
+    if arrow:SetTexture(ARROW_TEXTURE) then
+        arrow:SetTexCoord(0, 1, 0, 1)
+        arrow:SetVertexColor(fallbackR or 0, fallbackG or 1, fallbackB or 0)
+        return true
+    else
+        arrow:SetTexture(fallbackR or 0, fallbackG or 1, fallbackB or 0, 0.9)
+        return false
+    end
+end
+
 local MIN_SCALE, MAX_SCALE, DEFAULT_SCALE = 0.6, 1.8, 1.0
 
 local tdb -- RefactorCompareDB.toast after ADDON_LOADED
@@ -366,16 +407,10 @@ local function CreateToast()
     t.value:SetTextColor(0.9, 0.9, 0.9)
 
     t.arrow = t:CreateTexture(nil, "OVERLAY")
-    t.arrow:SetWidth(12)
-    t.arrow:SetHeight(12)
+    t.arrow:SetWidth(14)
+    t.arrow:SetHeight(16)
     t.arrow:SetPoint("RIGHT", -8, 0)
-    if t.arrow:SetTexture(ARROW_TEXTURE) then
-        t.arrow:SetVertexColor(ACCENT[1], ACCENT[2], ACCENT[3])
-    else
-        t.arrow:SetTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.9)
-        t.arrow:SetWidth(8)
-        t.arrow:SetHeight(8)
-    end
+    SetArrowAtlas(t.arrow, "loottoast-arrow-green", ACCENT[1], ACCENT[2], ACCENT[3])
     t.arrow:Hide()
 
     t:SetScript("OnUpdate", ToastOnUpdate)

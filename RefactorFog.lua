@@ -1130,31 +1130,11 @@ local function InitFog()
     if hooked then return end
     hooked = true
 
-    -- Override GetNumMapOverlays: return 0 while the flag is on so
-    -- Blizzard's WorldMapFrame_Update hides every WorldMapOverlayN frame,
-    -- leaving them free for us to reuse. Continent maps
-    -- (NUM_WORLDMAP_OVERLAYS == 0) always pass through so their own
-    -- zero-overlay path is unchanged. Custom zones without errata data
-    -- (e.g. Ascension content) also pass through so their discovered
-    -- overlays keep rendering normally.
-    local origGetNumMapOverlays = GetNumMapOverlays
-    GetNumMapOverlays = function()
-        if NUM_WORLDMAP_OVERLAYS == 0 then return origGetNumMapOverlays() end
-        if FogEnabled() then
-            local mapFileName = GetMapInfo()
-            local overlayMap = mapFileName and rawget(errata, mapFileName)
-            if overlayMap and next(overlayMap) then return 0 end
-        end
-        return origGetNumMapOverlays()
-    end
-
-    local origUpdate = WorldMapFrame_Update
-    WorldMapFrame_Update = function()
-        origUpdate()
+    hooksecurefunc("WorldMapFrame_Update", function()
         if FogEnabled() then
             updateOverlayTextures()
         end
-    end
+    end)
 end
 
 -- The checkbox flips the saved flag, but nothing re-renders the map on its

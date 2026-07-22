@@ -1331,6 +1331,93 @@ local function BuildWeightsPage()
         y = y - math.ceil(#specs / 4) * 26 - 12
     end
 
+    -- Hit cap --------------------------------------------------------------
+    -- Hit rating past the cap is wasted; below it, it's valuable. Per profile,
+    -- pick which cap applies (melee 8% / ranged 8% / spell 17%). The addon
+    -- then values hit at the profile's HIT weight up to the cap — measured
+    -- against the hit you already wear — and ~zero past it. Off = plain linear.
+    y = Section(child, "Hit cap", 0, y, INNER_W)
+    SmallText(child, "Value hit rating only until you're capped, counting the hit " ..
+        "you already wear. Reads your live rating — matches the character sheet's " ..
+        "hit X/Y display.", 0, y, INNER_W)
+    y = y - 34
+
+    local HITCAP_LABELS = { off = "Off", melee = "Melee (8%)", ranged = "Ranged (8%)", spell = "Spell (17%)" }
+    local hcDD = MakeDropdown(child, 160)
+    hcDD:SetPoint("TOPLEFT", 0, y)
+    hcDD.itemsFn = function()
+        local cur = (shared.GetHitCapMode and shared.GetHitCapMode()) or "off"
+        local items = {}
+        for _, m in ipairs({ "off", "melee", "ranged", "spell" }) do
+            tinsert(items, {
+                text = HITCAP_LABELS[m],
+                checked = (cur == m),
+                func = function()
+                    if shared.SetHitCapMode then shared.SetHitCapMode(m) end
+                    RefreshBags()
+                    RefactorUI.Refresh()
+                end,
+            })
+        end
+        return items
+    end
+    hcDD.Refresh = function(self)
+        local cur = (shared.GetHitCapMode and shared.GetHitCapMode()) or "off"
+        self:SetText(HITCAP_LABELS[cur] or "Off")
+    end
+    p:Track(hcDD)
+    Explain(hcDD.click, "Hit cap",
+        "Hit rating stops helping once you reach the cap. With this on, an item's " ..
+        "hit counts at the profile's Hit Rating weight up to the cap (given the hit " ..
+        "already on your other gear) and as worthless past it — so a capped character " ..
+        "stops seeing hit-heavy items as upgrades.\n\n" ..
+        "|cffffd200Never-miss caps|r (PvE raid boss / PvP player):\n" ..
+        "  Melee  - 8% PvE / 5% PvP\n" ..
+        "  Ranged - 8% PvE / 5% PvP\n" ..
+        "  Spell  - 17% PvE / 4% PvP\n" ..
+        "Pick the one your build uses to deal damage.\n\n" ..
+        "The checkbox below switches the scoring target between the PvE and " ..
+        "PvP cap — use it if you're gearing for PvP and want to stop valuing " ..
+        "hit past the lower PvP number.\n\n" ..
+        "The cap rating is read live from the game, so it tracks your level.\n\n" ..
+        "|cffff8060Note: only counts hit from gear (rating), matching the character " ..
+        "sheet's X/Y number - talent and racial hit isn't included. Compares against " ..
+        "your currently equipped gear.|r")
+
+    local hcReadout = child:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    hcReadout:SetPoint("TOPLEFT", 172, y - 6)
+    hcReadout.Refresh = function(self)
+        local info = shared.HitCapInfo and shared.HitCapInfo()
+        if not info or info.mode == "off" then
+            self:SetText("")
+            return
+        end
+        if info.cap then
+            local refStr = ""
+            if info.refCap then
+                local refLabel = info.pvp and "PvE" or "PvP"
+                refStr = string.format("  |cff999999(%s cap %d)|r",
+                    refLabel, math.floor(info.refCap + 0.5))
+            end
+            self:SetText(string.format("Current %d  /  Cap %d",
+                info.current or 0, math.floor(info.cap + 0.5)) .. refStr)
+        else
+            self:SetText("Current " .. (info.current or 0) ..
+                "  /  Cap —  (equip some hit to read the cap)")
+        end
+    end
+    p:Track(hcReadout)
+    y = y - 28
+
+    p:Track(MakeCheck(child, 0, y, INNER_W, "Target PvP cap (lower %)",
+        "Score against the PvP never-miss cap instead of the PvE one. " ..
+        "The other cap is shown in grey for reference.",
+        function() return shared.GetHitCapPvP and shared.GetHitCapPvP() or false end,
+        function(v) if shared.SetHitCapPvP then shared.SetHitCapPvP(v) end; RefreshBags(); RefactorUI.Refresh() end,
+        nil,
+        function() return (shared.GetHitCapMode and shared.GetHitCapMode() or "off") ~= "off" end))
+    y = y - 30
+
     -- Weight grid ----------------------------------------------------------
     local sectionTop = y
     y = Section(child, "Stat weights", 0, y, INNER_W)
