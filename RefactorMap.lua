@@ -41,10 +41,17 @@ local function InitRefactorMap()
 
     local coordsFrame = CreateFrame("Frame", nil, WorldMapFrame)
     coordsFrame:SetFrameLevel((WORLDMAP_POI_FRAMELEVEL or 10) + 20)
+    -- Anchored to the map VIEWPORT, not WorldMapFrame. WorldMapFrame is the
+    -- whole shell — in fullscreen mode its bottom is under the quest
+    -- log/detail panel, so BOTTOMLEFT/BOTTOMRIGHT of it put the readouts on
+    -- top of the quest text and the Show Quest Objectives checkbox.
+    -- WorldMapScrollFrame is the visible map rectangle in every mode
+    -- (fullscreen, mini, and the fullMapWindow tweak), so this follows mode
+    -- switches with no re-anchoring.
     local playerCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    playerCoords:SetPoint("BOTTOMLEFT", WorldMapFrame, "BOTTOMLEFT", 20, 10)
+    playerCoords:SetPoint("BOTTOMLEFT", WorldMapScrollFrame, "BOTTOMLEFT", 20, 10)
     local cursorCoords = coordsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    cursorCoords:SetPoint("BOTTOMRIGHT", WorldMapFrame, "BOTTOMRIGHT", -20, 10)
+    cursorCoords:SetPoint("BOTTOMRIGHT", WorldMapScrollFrame, "BOTTOMRIGHT", -20, 10)
 
     local function CursorMapPosition()
         local left, top = WorldMapDetailFrame:GetLeft(), WorldMapDetailFrame:GetTop()
