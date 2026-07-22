@@ -1,57 +1,69 @@
 # Refactor
 
-A World of Warcraft addon for **[Ascension](https://ascension.gg)**, a custom classless WotLK 3.3.5 server. Refactor scores your gear against your own stat priorities, tells you the moment an item is an upgrade, and smooths out a pile of everyday annoyances — auto-loot, quest automation, transmog collection, and more.
+**Know instantly when an item is an upgrade — and skip the busywork in between.**
+
+A World of Warcraft addon for **[Ascension](https://ascension.gg)**, a custom classless WotLK 3.3.5 server. Refactor scores your gear against your own stat priorities and smooths out a pile of everyday annoyances: auto-loot, quest automation, transmog collection, and more.
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-F16061?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/profetgit)
 
-> Built specifically for Ascension's Conquest of Azeroth system: 21 classes × 3-4 talent specs, each with hand-tuned default stat weights, plus support for Ascension's server-side item scaling that most gear-scoring addons don't account for.
+![Gear comparison tooltip](docs/images/comparison-tooltip.png)
+
+> Built for Ascension's Conquest of Azeroth system — 21 classes × 3-4 specs, each with hand-tuned default stat weights — and for Ascension's server-side item scaling that most gear-scoring addons get wrong.
 
 ---
 
 ## Features
 
-### 📊 Weighted Stat Gear Comparison
-The core feature. Assign your own weight to every stat (Strength, Agility, Crit, Haste, weapon DPS, etc.), and Refactor scores every item you hover or loot against what you currently have equipped.
+### 📊 Weighted stat gear comparison
+The core feature. Weight every stat (Strength, Agility, Crit, Haste, weapon DPS, …); Refactor scores every item you hover or loot against what you have equipped.
 
-- Instant **% upgrade / downgrade verdict** as a tooltip overlay
-- Green arrows on bag items that are upgrades
-- Smart slot logic — rings/trinkets/one-handers compare against your *weaker* equipped item, two-handers compare against your combined main+off hand
-- **Smart equip** — right-clicking a ring/trinket/one-hander into a full pair replaces whichever equipped item is actually weaker under your weights, instead of always the first slot
-- Correctly handles Ascension's **item scaling**: because Ascension scales item instances server-side (two copies of the same item link can have different stats), Refactor scans the *live* tooltip instead of trusting the item link — so verdicts are always accurate for the item actually in your bag, not some generic base version.
-- Never guesses: if an item can't be scanned (not cached client-side, hard requirement not met, etc.), no verdict is shown rather than a misleading one.
+- Instant **% upgrade / downgrade verdict** in the tooltip
+- Green arrows on upgrade items in your bags
+- Smart slot logic — rings/trinkets/one-handers compare against your *weaker* equipped item; two-handers against combined main+off hand
+- **Smart equip** — right-clicking into a full pair replaces whichever equipped item is actually weaker, not just the first slot
+- **Handles Ascension item scaling** — two copies of the same link can have different stats, so Refactor scans the *live* tooltip instead of trusting the link
+- **Never guesses** — if an item can't be scanned, no verdict is shown rather than a misleading one
 
-### 🏆 Class & Spec Profiles
-- Auto-detects your class and primary talent spec and seeds a matching profile with community-sourced default weights the first time you log in
-- Switch, save, and manage multiple named weight profiles per character
-- Auto-selection pauses if you manually switch profiles, and resumes with a simple command
+![Bag upgrade arrows](docs/images/bag-arrows.png)
 
-### 🎁 Loot Toasts
-Since Refactor auto-loots instantly (see below), the stock loot window never shows — so Refactor replaces it with animated toast popups: item icon, quality-colored name, stack count, and (if it's an upgrade) a pulsing glow with the % gain. Optionally shows the stack's auction-house value too (Auto/TSM/Auctionator, configurable on the Loot page).
+### 🏆 Class & spec profiles
+- Auto-detects your class and primary spec and seeds a matching profile with community-sourced weights on first login
+- Switch, save, and manage multiple named profiles per character
+- Auto-selection pauses if you switch manually, and resumes with `/rfc auto`
 
-### 💫 Crowd-Control Alert
-The 3.3.5 client has no loss-of-control display, so it's easy to miss *why* your character suddenly stopped responding. While you're stunned, feared, polymorphed, or otherwise CC'd, Refactor shows a large center-screen icon with a cooldown spiral, a label ("Stunned", "Feared", …) and a countdown. Recognizes the CC abilities of all 21 CoA classes plus NPC/boss CC. Movable, testable, and toggleable on the Tweaks page — roots and silences/disarms have their own sub-toggles.
+### 🎁 Loot toasts
+Refactor auto-loots instantly, so the stock loot window never shows — animated toasts replace it: item icon, quality-colored name, stack count, and a pulsing % gain if it's an upgrade. Optional auction-house value per stack (Auto/TSM/Auctionator).
 
-### ⚙️ Quality-of-Life Tweaks
-All individually toggleable:
-- Fast auto-loot (no more loot window delay)
-- Auto-collects transmog appearances from your bags
-- Tooltip follows your cursor, with a border colored by item quality
-- Auto-confirms Bind-on-Pickup loot prompts
-- Quest automation — auto-accept, auto turn-in, gossip/greeting quest picking (off by default; hold **Shift** to fall back to manual for any step)
-- Hides red UI error text and mutes the "I can't do that yet" error voice line
-- Mutes the cast-deny **fizzle sound** (the noise when you spam an ability on cooldown or try to cast without enough resource) — needs the bundled one-click client patch, see [Installation](#installation)
-- Auto-declines group invites, duels, guild invites, and trades from strangers (all off by default; hold **Shift** to handle one manually) — each decline prints a chat line so you know it happened
-- Auto-accepts player resurrections in battlegrounds (off by default)
-- Quick invite: Alt + Right-Click a player's unit frame, chat name, or model in the world to invite them to your party (off by default)
-- Fullscreen map as a movable, resizable window instead of a fullscreen blackout (off by default)
-- World map scroll-to-zoom and click-drag pan, with class-colored party/raid dots (ported from Magnify-WotLK); optional map coordinates and fade-while-moving (both off by default)
-- Auto-sell gray items and auto-repair (own money only) at merchants (both off by default; hold **Shift** to skip)
-- New-version notice when a guild or group member runs a newer Refactor
-- Seamless bag upgrade: right-click a full bag to auto-swap in your smallest equipped bag
-- Leave party when clicking Leave Dungeon at the end of an instance (off by default)
+![Loot toast](docs/images/loot-toast.png)
 
-### 🖥️ In-Game Config Window
-A clean, single-panel UI for everything above — no `/reload` required, changes apply instantly.
+### 💫 Crowd-control alert
+The 3.3.5 client has no loss-of-control display. While you're stunned, feared, polymorphed, or otherwise CC'd, Refactor shows a large center-screen icon with a cooldown spiral, a label, and a countdown. Recognizes all 21 CoA classes' CC plus NPC/boss CC. Movable and testable on the Tweaks page.
+
+![Crowd-control alert](docs/images/cc-alert.png)
+
+### ⚙️ Quality-of-life tweaks
+All individually toggleable on the Tweaks page:
+
+- **Fast auto-loot** — no loot-window delay
+- **Auto-confirm** Bind-on-Pickup prompts
+- **Auto-collect** transmog appearances from your bags
+- **Cursor tooltip** with quality-colored border
+- **Quest automation** — auto-accept, auto turn-in, gossip/greeting picking
+- **Hide red error text** and mute the "I can't do that yet" voice line
+- **Mute the cast-deny fizzle sound** — needs the one-click client patch, see [Installation](#installation)
+- **World map** — scroll-to-zoom, click-drag pan, class-colored party/raid dots (ported from Magnify-WotLK); optional coords and fade-while-moving
+- **Fullscreen map** as a movable, resizable window instead of a blackout
+- **Auto-sell grays & auto-repair** at merchants (own money only)
+- **Auto-decline** party/duel/guild invites and stranger trades; **auto-accept** BG resurrections
+- **Quick invite** — Alt+Right-Click a player to invite
+- **Seamless bag upgrade** — right-click a full bag to auto-swap in your smallest one
+- **New-version notice** when a guildmate or group member runs a newer build
+- **Leave party** on clicking Leave Dungeon
+
+> Most automation tweaks are **off by default** and honor **Shift-to-cancel** — hold Shift to handle any single step manually.
+
+### 🖥️ In-game config window
+One clean panel for everything above — no `/reload`, changes apply instantly. Open with `/rfc` or the minimap button.
 
 ---
 
@@ -59,17 +71,17 @@ A clean, single-panel UI for everything above — no `/reload` required, changes
 
 1. Download the latest release (or clone this repo).
 2. Copy the `Refactor` folder into your Ascension `Interface\AddOns\` directory.
-3. Launch the game and make sure **Refactor** is enabled on the AddOns screen.
+3. Launch the game and enable **Refactor** on the AddOns screen.
 
 ### Optional: mute the cast-deny fizzle sound
 
-The fizzle noise the game plays when a cast is denied (ability on cooldown, not enough rage/mana/energy) is played by the game engine from sound files — an addon alone can't mute it. Refactor ships a tiny client patch that replaces those five sound files with silent copies:
+The fizzle noise on a denied cast is played by the game engine — an addon alone can't mute it. Refactor ships a client patch that swaps those five sound files for silent copies:
 
-1. Open `Interface\AddOns\Refactor\client-patch\` and double-click **`install-silent-fizzles.cmd`** (it copies a `Sound\` folder with five silent `.wav` files into your game root, next to `Ascension.exe`).
+1. Open `Interface\AddOns\Refactor\client-patch\` and double-click **`install-silent-fizzles.cmd`**.
 2. Restart the game.
-3. Done — casts deny silently. The **"Mute cast-deny sounds"** checkbox on the Tweaks page now works as an instant in-game toggle: unticking it brings the sound back (Refactor replays a bundled copy of the original), ticking it silences again. No restart needed either way.
+3. The **"Mute cast-deny sounds"** checkbox on the Tweaks page now works as an instant in-game toggle.
 
-To undo everything, run `uninstall-silent-fizzles.cmd` from the same folder and restart the game. Without this patch installed, the checkbox has no effect while ticked (the stock sound plays as always) — and unticking it would play the sound twice, so leave it ticked.
+To undo, run `uninstall-silent-fizzles.cmd` from the same folder and restart. Without the patch, leave the checkbox ticked — unticking it would play the sound twice.
 
 ---
 
@@ -77,60 +89,40 @@ To undo everything, run `uninstall-silent-fizzles.cmd` from the same folder and 
 
 | Command | Effect |
 |---|---|
-| `/refactor` or `/rfc` | Open the Refactor config window |
+| `/refactor` or `/rfc` | Open the config window |
 | `/rfc auto` | Resume automatic spec-based profile selection |
 | `/rfc debug` | Print tooltip-scan debug info on hover |
 
-Loot toast on/off, anchor position, and a preview toast are all on the **Loot** page of the config window.
-
-You can also open the config window from the **minimap button** — left-click to open, right-click for a quick master toggle, drag to reposition.
+Open the config window from the **minimap button** too — left-click to open, right-click for a master toggle, drag to reposition.
 
 ---
 
-## Screenshots
+## More screenshots
 
-### Gear comparison tooltip
-![Gear comparison tooltip](docs/images/comparison-tooltip.png)
-
-### Bag upgrade arrows
-![Bag upgrade arrows](docs/images/bag-arrows.png)
-
-### Loot toast
-![Loot toast](docs/images/loot-toast.png)
-
-### Crowd-control alert
-![Crowd-control alert](docs/images/cc-alert.png)
-
-### Config window — General page
-![Config window general page](docs/images/config-general.png)
-
-### Config window — Tweaks page
-![Config window tweaks page](docs/images/config-tweaks.png)
-
-### Config window — Stat Weights page
-![Config window stat weights page](docs/images/config-stat-weights.png)
-
-### Minimap button
-![Minimap button](docs/images/minimap-button.png)
+| | |
+|---|---|
+| ![Config general](docs/images/config-general.png) | ![Config tweaks](docs/images/config-tweaks.png) |
+| **General page** | **Tweaks page** |
+| ![Config stat weights](docs/images/config-stat-weights.png) | ![Minimap button](docs/images/minimap-button.png) |
+| **Stat Weights page** | **Minimap button** |
 
 ---
 
 ## Compatibility
 
-- Client: WotLK 3.3.5 (Interface 30300), Ascension-specific build
-- Bag addon support: works with the default Blizzard container frames, and hooks item slots directly for Bagnon, DragonUI's bundled Combuctor bags, AdiBags, and ElvUI if installed
+- **Client:** WotLK 3.3.5 (Interface 30300), Ascension-specific build
+- **Bag addons:** default Blizzard container frames, plus Bagnon, DragonUI's Combuctor bags, AdiBags, and ElvUI
 
 ## Contributing
 
-Issues and pull requests are welcome. If you're proposing new default stat weights for a class/spec, please explain your reasoning (source theorycraft, Pawn string, etc.) in the PR description.
+Issues and PRs welcome. If you're proposing new default stat weights, please explain your reasoning (theorycraft source, Pawn string, etc.) in the PR.
 
 ## Support
 
-If you enjoy this addon and would like to support its development, you can buy me a coffee on Ko-fi!
+If you enjoy this addon, you can buy me a coffee on Ko-fi!
 
 [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/profetgit)
 
 ## License
 
 [MIT](LICENSE) — do whatever you want with it, just keep the copyright notice.
-
