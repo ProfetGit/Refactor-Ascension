@@ -31,6 +31,23 @@ local function InitRefactorMap()
 
     local PLAYER_ARROW_SIZE = 36
 
+    -- Group dot frames and party unit tokens, resolved once at load. These
+    -- frames are created by Blizzard_WorldMap (already loaded — InitRefactorMap
+    -- bails otherwise) and never replaced, so every hot path below indexes
+    -- these arrays instead of rebuilding _G["WorldMapRaid"..i]. The per-frame
+    -- position loop alone was 40 string builds + global lookups per frame,
+    -- ~2400 a second with the map open.
+    local partyFrames, raidFrames = {}, {}
+    local partyUnits, raidUnits = {}, {}
+    for i = 1, MAX_PARTY_MEMBERS do
+        partyFrames[i] = _G["WorldMapParty" .. i]
+        partyUnits[i] = "party" .. i
+    end
+    for i = 1, MAX_RAID_MEMBERS do
+        raidFrames[i] = _G["WorldMapRaid" .. i]
+        raidUnits[i] = "raid" .. i
+    end
+
     local function Qol(key)
         return RefactorQoL and RefactorQoL.Get(key)
     end
@@ -142,6 +159,56 @@ local function InitRefactorMap()
     -- Map Icon Parent Sync Helper
     --------------------------------------------------------------------
 
+    -- Name-based classification of WorldMapFrame's children, cached per
+    -- frame. A frame's name is immutable, but SyncMapIconParents ran up to
+    -- eight string matches against it every 0.3s for the whole session, for
+    -- every child. The cache is weak-keyed so frames an addon discards are
+    -- not pinned in memory.
+    --
+    -- The FIELD checks at the call sites (.data/.questId/.discovery/
+    -- .itemLink/.itemId) are deliberately NOT cached: pin addons attach
+    -- those after the frame is created, so they must stay live.
+    --
+    -- Plain-text find (the `true` argument) rather than pattern matching —
+    -- none of these needles contain magic characters, so the results are
+    -- identical and the scan skips the pattern compiler.
+    local NAME_CONTROL = { "Mapster", "Option", "DropDown", "Title", "Close", "Track", "Zoom", "Guide" }
+    local NAME_PIN = { "Questie", "HBDPin", "HBDDot", "HandyNotes", "GatherMate", "TomTomPin", "LootCollector" }
+
+    local nameClassCache = setmetatable({}, { __mode = "k" })
+
+    local function ClassifyByName(child)
+        local cached = nameClassCache[child]
+        if cached then return cached end
+        local name = child:GetName()
+        local verdict = "other"
+        if name then
+            for i = 1, #NAME_CONTROL do
+                if name:find(NAME_CONTROL[i], 1, true) then verdict = "control" break end
+            end
+            if verdict == "other" then
+                for i = 1, #NAME_PIN do
+                    if name:find(NAME_PIN[i], 1, true) then verdict = "pin" break end
+                end
+            end
+        end
+        nameClassCache[child] = verdict
+        return verdict
+    end
+
+    -- Same idea for WorldMapButton's children, which only ever ask the one
+    -- question. Was two GetName() calls plus a pattern match per child.
+    local lootCollectorCache = setmetatable({}, { __mode = "k" })
+
+    local function IsLootCollectorFrame(child)
+        local cached = lootCollectorCache[child]
+        if cached ~= nil then return cached end
+        local name = child:GetName()
+        local verdict = (name and name:find("LootCollector", 1, true)) and true or false
+        lootCollectorCache[child] = verdict
+        return verdict
+    end
+
     local function SyncMapIconParents()
         if not WorldMapButton or not WorldMapFrame then return end
         local detailScale = WorldMapDetailFrame:GetScale() or 1
@@ -189,10 +256,10 @@ local function InitRefactorMap()
         local children = { WorldMapFrame:GetChildren() }
         for _, child in ipairs(children) do
             if child ~= WorldMapScrollFrame and child ~= WorldMapDetailFrame and child ~= WorldMapButton and child ~= WorldMapFrameAreaFrame and child ~= coordsFrame and child ~= fadeFrame and child ~= _G["LootCollectorMapSearchFrame"] then
-                local name = child:GetName()
-                if name and (name:find("Mapster") or name:find("Option") or name:find("DropDown") or name:find("Title") or name:find("Close") or name:find("Track") or name:find("Zoom") or name:find("Guide")) then
+                local verdict = ClassifyByName(child)
+                if verdict == "control" then
                     -- UI control frame on WorldMapFrame: DO NOT REPARENT
-                elseif (name and (name:find("Questie") or name:find("HBDPin") or name:find("HBDDot") or name:find("HandyNotes") or name:find("GatherMate") or name:find("TomTomPin") or name:find("LootCollector"))) or child.data or child.questId or child.discovery or child.itemLink or child.itemId then
+                elseif verdict == "pin" or child.data or child.questId or child.discovery or child.itemLink or child.itemId then
                     child:SetParent(WorldMapButton)
                 end
             end
@@ -204,7 +271,7 @@ local function InitRefactorMap()
                 if child:GetScale() ~= 1 then
                     child:SetScale(1)
                 end
-                if child.discovery or child.unlootedOutline or (child.texture and child.border) or (child:GetName() and child:GetName():find("LootCollector")) then
+                if child.discovery or child.unlootedOutline or (child.texture and child.border) or IsLootCollectorFrame(child) then
                     local targetSize = 16 / detailScale
                     child:SetSize(targetSize, targetSize)
                     if child.border then child.border:SetSize(targetSize, targetSize) end
@@ -238,14 +305,46 @@ local function InitRefactorMap()
         return nil
     end
 
-    local function GetMapster(configName)
-        if LibStub and LibStub:GetLibrary("AceAddon-3.0", true) then
-            local mapster = LibStub:GetLibrary("AceAddon-3.0"):GetAddon("Mapster", true)
-            if not mapster then return nil, nil end
-            if mapster.db and mapster.db.profile then return mapster, mapster.db.profile[configName] end
-        end
-        return nil, nil
+    -- Mapster's addon object, resolved once per map open instead of per
+    -- lookup. The old body ran two LibStub:GetLibrary calls plus a GetAddon
+    -- on EVERY call — and the callers are the hottest paths in this file:
+    -- the player-arrow block fires it once per frame (~180 library lookups
+    -- a second with the map open) and resizePOI fires it twice per quest POI.
+    -- Only the addon handle is cached; mapster.db.profile is re-read each
+    -- call because AceDB swaps that table wholesale on a profile switch, and
+    -- a cached reference there would serve the old profile's values.
+    local mapsterAddon, mapsterResolved = nil, false
+
+    local function ResolveMapster()
+        mapsterResolved = true
+        mapsterAddon = nil
+        if not (LibStub and LibStub.GetLibrary) then return end
+        local ace = LibStub:GetLibrary("AceAddon-3.0", true)
+        if not ace then return end
+        mapsterAddon = ace:GetAddon("Mapster", true)
     end
+
+    -- Called from WorldMapFrame's OnShow: a Mapster that loaded (or unloaded)
+    -- since the last open gets picked up on the next one.
+    local function InvalidateMapsterCache()
+        mapsterResolved = false
+    end
+
+    local function GetMapster(configName)
+        if not mapsterResolved then ResolveMapster() end
+        local mapster = mapsterAddon
+        if not mapster then return nil, nil end
+        -- Matches the original contract exactly: a Mapster without a live
+        -- profile table reports as absent, so callers never poke its fields.
+        local profile = mapster.db and mapster.db.profile
+        if not profile then return nil, nil end
+        return mapster, profile[configName]
+    end
+
+    -- Hoisted out of resizePOI, which reassigned this field per POI button
+    -- per quest update — a fresh closure allocated every time for a function
+    -- that never varies.
+    local MAPSTER_POI_NOOP = function() end
 
     local function SetPOIMaxBounds()
         local mapSize = WORLDMAP_SETTINGS.size or 1
@@ -261,7 +360,7 @@ local function InitRefactorMap()
         local mapster, mapsterPoiScale = GetMapster("poiScale")
         local _, mapsterQuestObjectives = GetMapster("questObjectives")
         if mapster then
-            mapster.WorldMapFrame_DisplayQuestPOI = function() end
+            mapster.WorldMapFrame_DisplayQuestPOI = MAPSTER_POI_NOOP
         end
 
         local effectivePoiScale = (mapsterPoiScale or 1)
@@ -314,26 +413,80 @@ local function InitRefactorMap()
         PreviousState.zone = GetCurrentMapZone()
     end
 
+    -- DrawQuestBlob re-tessellates the selected quest's area polygon, and it
+    -- is called twice per redraw. The pan handler runs once per frame while
+    -- the mouse is held, so an unthrottled pan was ~120 tessellations a
+    -- second — by far the heaviest thing on the map's hot path.
+    --
+    -- Position state (PersistMapScrollAndPan) stays per-frame: it is four
+    -- cheap getters and the restore-on-reopen path needs it exact. Only the
+    -- blob redraw is rate-limited, and a flush on mouse-up guarantees the
+    -- final resting position is always drawn. Discrete callers (mousewheel
+    -- zoom, click-to-zoom-out) keep redrawing immediately — they fire at
+    -- most once per input, so throttling them would only add latency.
+    local BLOB_REDRAW_INTERVAL = 1 / 16
+    local lastBlobRedraw, blobPending = 0, false
+
+    local function RedrawQuestBlob()
+        if InCombatLockdown() then return end
+        if not WORLDMAP_SETTINGS.selectedQuest then return end
+        WorldMapBlobFrame:DrawQuestBlob(WORLDMAP_SETTINGS.selectedQuestId, false)
+        WorldMapBlobFrame:DrawQuestBlob(WORLDMAP_SETTINGS.selectedQuestId, true)
+    end
+
     local function AfterScrollOrPan()
         PersistMapScrollAndPan()
-        if InCombatLockdown() then return end
-        if WORLDMAP_SETTINGS.selectedQuest then
-            WorldMapBlobFrame:DrawQuestBlob(WORLDMAP_SETTINGS.selectedQuestId, false)
-            WorldMapBlobFrame:DrawQuestBlob(WORLDMAP_SETTINGS.selectedQuestId, true)
+        lastBlobRedraw = GetTime()
+        blobPending = false
+        RedrawQuestBlob()
+    end
+
+    -- Per-frame pan step: persist always, redraw at most every 1/16s.
+    local function AfterPanStep()
+        PersistMapScrollAndPan()
+        local now = GetTime()
+        if now - lastBlobRedraw < BLOB_REDRAW_INTERVAL then
+            blobPending = true
+            return
+        end
+        lastBlobRedraw = now
+        blobPending = false
+        RedrawQuestBlob()
+    end
+
+    -- Mouse-up: draw the blob at the final pan position if the last step was
+    -- throttled out, so releasing the drag never leaves it a frame behind.
+    local function FlushPendingBlob()
+        if not blobPending then return end
+        blobPending = false
+        lastBlobRedraw = GetTime()
+        RedrawQuestBlob()
+    end
+
+    -- The 100 POI button names, built once. ResizeQuestPOIs runs on every
+    -- WorldMapFrame_UpdateQuests pass and used to rebuild all 100 of these
+    -- strings (two concatenations each) per pass, most of them only to look
+    -- up a slot Blizzard hasn't populated. The names never change, so the
+    -- concatenation is pure waste; _G is still the lookup source because the
+    -- QuestPOI system creates these buttons lazily, well after this file runs.
+    local POI_BUTTON_NAMES = {}
+    do
+        local QUEST_POI_MAX_TYPES = 4
+        local POI_TYPE_MAX_BUTTONS = 25
+        for i = 1, QUEST_POI_MAX_TYPES do
+            for j = 1, POI_TYPE_MAX_BUTTONS do
+                POI_BUTTON_NAMES[#POI_BUTTON_NAMES + 1] =
+                    "poiWorldMapPOIFrame" .. i .. "_" .. j
+            end
         end
     end
 
     local function ResizeQuestPOIs()
         if poiMaxX == nil or poiMaxY == nil then SetPOIMaxBounds() end
 
-        local QUEST_POI_MAX_TYPES = 4
-        local POI_TYPE_MAX_BUTTONS = 25
-
-        for i = 1, QUEST_POI_MAX_TYPES do
-            for j = 1, POI_TYPE_MAX_BUTTONS do
-                local buttonName = "poiWorldMapPOIFrame" .. i .. "_" .. j
-                resizePOI(_G[buttonName])
-            end
+        for n = 1, #POI_BUTTON_NAMES do
+            local button = _G[POI_BUTTON_NAMES[n]]
+            if button then resizePOI(button) end
         end
 
         if QUEST_POI_SWAP_BUTTONS then
@@ -368,12 +521,17 @@ local function InitRefactorMap()
             if _G[flagFrameName] then _G[flagFrameName]:SetScale(1 / WorldMapDetailFrame:GetScale()) end
         end
 
-        for i = 1, MAX_PARTY_MEMBERS do
-            if _G["WorldMapParty" .. i] then _G["WorldMapParty" .. i]:SetScale(1 / WorldMapDetailFrame:GetScale()) end
+        -- Cached frame lists; the old form also looked each name up twice
+        -- (once to test, once to scale).
+        local invScale = 1 / WorldMapDetailFrame:GetScale()
+        for i = 1, #partyFrames do
+            local f = partyFrames[i]
+            if f then f:SetScale(invScale) end
         end
 
-        for i = 1, MAX_RAID_MEMBERS do
-            if _G["WorldMapRaid" .. i] then _G["WorldMapRaid" .. i]:SetScale(1 / WorldMapDetailFrame:GetScale()) end
+        for i = 1, #raidFrames do
+            local f = raidFrames[i]
+            if f then f:SetScale(invScale) end
         end
 
         for i = 1, #MAP_VEHICLES do
@@ -504,14 +662,14 @@ local function InitRefactorMap()
                 PlayerArrowEffectFrame:SetParent(WorldMapDetailFrame)
             end
 
-            for i = 1, MAX_PARTY_MEMBERS do
-                local partyFrame = _G["WorldMapParty" .. i]
+            for i = 1, #partyFrames do
+                local partyFrame = partyFrames[i]
                 if partyFrame and partyFrame:GetParent() ~= WorldMapDetailFrame then
                     partyFrame:SetParent(WorldMapDetailFrame)
                 end
             end
-            for i = 1, MAX_RAID_MEMBERS do
-                local raidFrame = _G["WorldMapRaid" .. i]
+            for i = 1, #raidFrames do
+                local raidFrame = raidFrames[i]
                 if raidFrame and raidFrame:GetParent() ~= WorldMapDetailFrame then
                     raidFrame:SetParent(WorldMapDetailFrame)
                 end
@@ -544,17 +702,51 @@ local function InitRefactorMap()
             local y = max(0, dY + WorldMapScrollFrame.y)
             y = min(y, WorldMapScrollFrame.maxY or y)
             WorldMapScrollFrame:SetVerticalScroll(y)
-            AfterScrollOrPan()
+            AfterPanStep() -- rate-limited blob redraw; flushed on mouse-up
         end
     end
 
+    -- This runs per shown group member on a 20 Hz clock while the map is
+    -- open, so cache the class color per unit token and only touch the
+    -- textures when the shown state actually changes. Without both halves
+    -- a 40-man raid cost ~800 UnitClass calls and ~2400 redundant
+    -- Show/Hide/SetVertexColor calls a second, every one of them redrawing
+    -- a dot to the colour it already was.
+    --
+    -- FAILURES ARE NOT CACHED: UnitClass returns nil until the server has
+    -- sent that member's class (right after login or joining), and caching
+    -- the miss pinned every dot white until the next roster change.
+    -- Ascension's client extends RAID_CLASS_COLORS with the CoA class
+    -- tokens; CUSTOM_CLASS_COLORS is checked as a fallback for clients or
+    -- addons that supply it instead.
+    local classColorCache = {}
+    local rosterWatcher = CreateFrame("Frame")
+    rosterWatcher:RegisterEvent("PARTY_MEMBERS_CHANGED")
+    rosterWatcher:RegisterEvent("RAID_ROSTER_UPDATE")
+    rosterWatcher:SetScript("OnEvent", function()
+        for k in pairs(classColorCache) do classColorCache[k] = nil end
+    end)
+
     local function ColorWorldMapPartyMemberFrame(partyMemberFrame, unit)
-        local classColor = select(2, UnitClass(unit))
-        local colorObj = classColor and (RAID_CLASS_COLORS[classColor] or (_G.CUSTOM_CLASS_COLORS and _G.CUSTOM_CLASS_COLORS[classColor]))
-        if colorObj and Qol("mapClassIcons") then
+        local classColor = unit and classColorCache[unit]
+        if classColor == nil and unit then
+            local token = select(2, UnitClass(unit))
+            local color = token and (RAID_CLASS_COLORS[token]
+                or (_G.CUSTOM_CLASS_COLORS and _G.CUSTOM_CLASS_COLORS[token]))
+            if color then
+                classColorCache[unit] = color
+                classColor = color
+            end
+        end
+        -- Dirty check: the colour object doubles as the state key, so a dot
+        -- that is already showing this class's colour costs one comparison.
+        local wantColor = (classColor and Qol("mapClassIcons")) and classColor or nil
+        if partyMemberFrame.refactorShownColor == wantColor then return end
+        partyMemberFrame.refactorShownColor = wantColor
+        if wantColor then
             if partyMemberFrame.colorIcon then
                 partyMemberFrame.colorIcon:Show()
-                partyMemberFrame.colorIcon:SetVertexColor(colorObj.r, colorObj.g, colorObj.b, 1)
+                partyMemberFrame.colorIcon:SetVertexColor(wantColor.r, wantColor.g, wantColor.b, 1)
             end
             if partyMemberFrame.icon then partyMemberFrame.icon:Hide() end
         else
@@ -566,6 +758,53 @@ local function InitRefactorMap()
     local mapUpdateAccum = 0
     local mapIconSyncAccum = 0
     local function WorldMapButton_OnUpdate(self, elapsed)
+        -- Geometry is read once and shared by the player-arrow and group-dot
+        -- blocks below; both used to fetch the identical three values
+        -- separately in the same call.
+        local detailWidth = WorldMapDetailFrame:GetWidth()
+        local detailHeight = WorldMapDetailFrame:GetHeight()
+        local scale = WorldMapDetailFrame:GetScale()
+
+        -- Group dot positions run FIRST and unconditionally — they are not
+        -- gated on mapZoom/mapClassIcons. The stock WorldMapButton OnUpdate
+        -- (still called as the original handler) re-points every
+        -- WorldMapParty*/WorldMapRaid* frame every frame using math that
+        -- assumes WorldMapDetailFrame scale 1 — but SetDetailFrameScale gives
+        -- those frames SetScale(1/detailScale), so under zoom stock's offsets
+        -- land off by scale² and the dot flies off the map. Correcting on a
+        -- 20 Hz clock meant stock won two frames out of three: that was the
+        -- reported flicker + "icons outside the map when zoomed in". The
+        -- correction must overwrite stock in the same frame stock wrote.
+        --
+        -- This block used to sit BELOW the mapZoom/mapClassIcons early return,
+        -- which silently contradicted the "never gated" rule above it: with
+        -- both flags off the dots were left at stock's wrong position. The
+        -- zoom engine is installed regardless of the flags, so the correction
+        -- has to be too.
+        --
+        -- Not gated on WorldMapScrollFrame.zoomedIn either: that flag is only
+        -- assigned in the mousewheel/mouseup handlers, so a zoom restored by
+        -- SetupWorldMapFrame (PreviousState.scale) leaves it false and the
+        -- dots stay pinned at stock's wrong point. At scale 1 this math is
+        -- identical to stock's, so running unconditionally costs nothing.
+        local isRaid = GetNumRaidMembers() > 0
+        local frames = isRaid and raidFrames or partyFrames
+        local units = isRaid and raidUnits or partyUnits
+
+        for i = 1, #frames do
+            local icon = frames[i]
+            if icon and icon:IsShown() then
+                local unit = (isRaid and icon.unit) or units[i]
+                if unit and UnitExists(unit) then
+                    local x, y = GetPlayerMapPosition(unit)
+                    if x and y and x > 0 and y > 0 then
+                        icon:ClearAllPoints()
+                        icon:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", x * detailWidth * scale, -y * detailHeight * scale)
+                    end
+                end
+            end
+        end
+
         if not Qol("mapZoom") and not Qol("mapClassIcons") then return end
 
         if WorldMapScrollFrame.panning then
@@ -594,9 +833,6 @@ local function InitRefactorMap()
                 WorldMapPlayer.Icon:SetRotation(PlayerArrowFrame:GetFacing())
                 WorldMapPlayer.Icon:SetSize(PLAYER_ARROW_SIZE * (mapsterArrowScale or 1), PLAYER_ARROW_SIZE * (mapsterArrowScale or 1))
             end
-            local detailWidth = WorldMapDetailFrame:GetWidth()
-            local detailHeight = WorldMapDetailFrame:GetHeight()
-            local scale = WorldMapDetailFrame:GetScale()
             WorldMapPlayer:ClearAllPoints()
             WorldMapPlayer:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", playerX * detailWidth * scale, -playerY * detailHeight * scale)
 
@@ -606,45 +842,6 @@ local function InitRefactorMap()
             if WorldMapPlayer.texture then WorldMapPlayer.texture:Hide() end
         end
 
-        -- Group dot positions follow the SAME rule as the player arrow above:
-        -- per-frame, never throttled, never gated. The stock WorldMapButton
-        -- OnUpdate (called as the original handler) re-points every
-        -- WorldMapParty*/WorldMapRaid* frame every frame using math that
-        -- assumes WorldMapDetailFrame scale 1 — but SetDetailFrameScale gives
-        -- those frames SetScale(1/detailScale), so under zoom stock's offsets
-        -- land off by scale² and the dot flies off the map. Correcting on a
-        -- 20 Hz clock meant stock won two frames out of three: that was the
-        -- reported flicker + "icons outside the map when zoomed in". The
-        -- correction must overwrite stock in the same frame stock wrote.
-        --
-        -- Not gated on WorldMapScrollFrame.zoomedIn either: that flag is only
-        -- assigned in the mousewheel/mouseup handlers, so a zoom restored by
-        -- SetupWorldMapFrame (PreviousState.scale) leaves it false and the
-        -- dots stay pinned at stock's wrong point. At scale 1 this math is
-        -- identical to stock's, so running unconditionally costs nothing.
-        local detailWidth = WorldMapDetailFrame:GetWidth()
-        local detailHeight = WorldMapDetailFrame:GetHeight()
-        local scale = WorldMapDetailFrame:GetScale()
-
-        local isRaid = GetNumRaidMembers() > 0
-        local prefix = isRaid and "WorldMapRaid" or "WorldMapParty"
-        local unitPrefix = isRaid and "raid" or "party"
-        local numMembers = isRaid and MAX_RAID_MEMBERS or MAX_PARTY_MEMBERS
-
-        for i = 1, numMembers do
-            local icon = _G[prefix .. i]
-            if icon and icon:IsShown() then
-                local unit = (isRaid and icon.unit) or (unitPrefix .. i)
-                if unit and UnitExists(unit) then
-                    local x, y = GetPlayerMapPosition(unit)
-                    if x and y and x > 0 and y > 0 then
-                        icon:ClearAllPoints()
-                        icon:SetPoint("CENTER", WorldMapDetailFrame, "TOPLEFT", x * detailWidth * scale, -y * detailHeight * scale)
-                    end
-                end
-            end
-        end
-
         -- Class coloring is idempotent and fights nothing per-frame, so it
         -- keeps the slower clock — this is the expensive O(40) half.
         mapUpdateAccum = mapUpdateAccum + (elapsed or 0)
@@ -652,15 +849,15 @@ local function InitRefactorMap()
         mapUpdateAccum = 0
 
         if Qol("mapClassIcons") then
-            if GetNumRaidMembers() == 0 then
-                for i = 1, MAX_PARTY_MEMBERS do
-                    local partyMemberFrame = _G["WorldMapParty" .. i]
-                    if partyMemberFrame and partyMemberFrame:IsVisible() then ColorWorldMapPartyMemberFrame(partyMemberFrame, "party" .. i) end
+            if isRaid then
+                for i = 1, #raidFrames do
+                    local f = raidFrames[i]
+                    if f and f:IsVisible() and f.unit then ColorWorldMapPartyMemberFrame(f, f.unit) end
                 end
             else
-                for i = 1, MAX_RAID_MEMBERS do
-                    local partyMemberFrame = _G["WorldMapRaid" .. i]
-                    if partyMemberFrame and partyMemberFrame:IsVisible() and partyMemberFrame.unit then ColorWorldMapPartyMemberFrame(partyMemberFrame, partyMemberFrame.unit) end
+                for i = 1, #partyFrames do
+                    local f = partyFrames[i]
+                    if f and f:IsVisible() then ColorWorldMapPartyMemberFrame(f, partyUnits[i]) end
                 end
             end
         end
@@ -743,6 +940,10 @@ local function InitRefactorMap()
                 AfterScrollOrPan()
                 WorldMapScrollFrame.zoomedIn = false
             end
+        else
+            -- Drag ended: the last pan step may have been inside the blob
+            -- throttle window, so draw once more at the resting position.
+            FlushPendingBlob()
         end
 
         WorldMapScrollFrame.moved = false
@@ -831,13 +1032,17 @@ local function InitRefactorMap()
     local original_WorldMapFrame_OnShow = WorldMapFrame:GetScript("OnShow")
     WorldMapFrame:SetScript("OnShow", function(self)
         if original_WorldMapFrame_OnShow then original_WorldMapFrame_OnShow(self) end
+        -- Map open is the re-check boundary for the Mapster handle: it can
+        -- only appear or disappear between opens, never mid-frame.
+        InvalidateMapsterCache()
         SetupWorldMapFrame()
     end)
 
-    for i = 1, MAX_RAID_MEMBERS do
-        CreateClassColorIcon(_G["WorldMapParty" .. i])
-        CreateClassColorIcon(_G["WorldMapRaid" .. i])
-    end
+    -- Walks the cached frame lists instead of rebuilding 80 global names.
+    -- (The old loop also ran WorldMapParty1..40 against a list that only
+    -- goes to MAX_PARTY_MEMBERS, so 36 of its 40 party lookups were nil.)
+    for i = 1, #partyFrames do CreateClassColorIcon(partyFrames[i]) end
+    for i = 1, #raidFrames do CreateClassColorIcon(raidFrames[i]) end
 
     local combatWatcher = CreateFrame("Frame")
     combatWatcher:RegisterEvent("PLAYER_REGEN_ENABLED")

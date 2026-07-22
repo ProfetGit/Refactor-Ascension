@@ -18,7 +18,16 @@ modules\bag_upgrade.lua
 modules\version_check.lua
 RefactorMap.lua
 RefactorFog.lua
-RefactorCompare.lua
+RefactorCompare\01_profiles.lua
+RefactorCompare\02_classspec.lua
+RefactorCompare\03_scan.lua
+RefactorCompare\04_score.lua
+RefactorCompare\05_tooltip.lua
+RefactorCompare\06_bagicons.lua
+RefactorCompare\07_questroll.lua
+RefactorCompare\08_merchant.lua
+RefactorCompare\09_lootalert.lua
+RefactorCompare\10_config.lua
 RefactorToast.lua
 RefactorCC.lua
 RefactorUI.lua
