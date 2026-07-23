@@ -2,10 +2,11 @@
 -- Loot toasts: fast auto-loot (Refactor.lua) skips the loot window, so
 -- items vanish into bags unseen. Each item you loot gets a small animated
 -- toast — icon, quality-colored name, stack count — that slides in, holds
--- and fades out. If RefactorCompare judges the item an upgrade (same
--- trust rules as the bag arrows: live instance scan only, never a
--- bare-link estimate), the toast carries a softly pulsing green arrow
--- and the % verdict as its second line. The stack's worth (TSM /
+-- and fades out. If the separate Refactor Gear addon is installed and
+-- judges the item an upgrade (same trust rules as its bag arrows: live
+-- instance scan only, never a bare-link estimate), the toast carries a
+-- softly pulsing green arrow and the % verdict as its second line —
+-- without that addon the toast is just the item. The stack's worth (TSM /
 -- Auctionator / vendor, source picked on the Loot page) sits right-
 -- aligned on that same line.
 --
@@ -539,7 +540,10 @@ local function TryResolve(entry)
     -- materials (most loot) toast immediately with no verdict work, and
     -- their hover tooltip falls back to the plain link, which is fine
     -- since scaling only matters for gear.
-    local shared = RefactorCompareShared
+    -- Refactor Gear (the standalone gear-compare addon) is optional: read
+    -- it at use time, never at load, since addon load order isn't ours to
+    -- control. Absent = no verdict work at all, just the item toast.
+    local shared = RefactorGearShared
     local bag, slot, upgrade
     if shared and shared.IsEnabled()
         and (not shared.IsGear or shared.IsGear(link)) then
@@ -589,9 +593,25 @@ resolveFrame:SetScript("OnUpdate", function(self, elapsed)
     if #pending == 0 then self:Hide() end
 end)
 
--- Fed by RefactorCompare's single CHAT_MSG_LOOT parse (see
--- RegisterLootListener below) — this file no longer pattern-matches loot
--- lines itself; the (link, count) arrive pre-extracted.
+-- Self-loot chat lines -> (link, count). The locale's own LOOT_ITEM_*
+-- format strings are turned into match patterns; the multi-stack forms go
+-- first so the "x3" suffix lands in the %d capture instead of being
+-- swallowed by the greedy %s capture. The link is re-extracted from the
+-- %s capture by item-link shape either way.
+local function PatternFromFormat(fmt)
+    fmt = fmt:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1")
+    fmt = fmt:gsub("%%s", "(.+)")
+    fmt = fmt:gsub("%%d", "(%%d+)")
+    return "^" .. fmt .. "$"
+end
+
+local LOOT_SELF_PATTERNS = {
+    { pattern = PatternFromFormat(LOOT_ITEM_SELF_MULTIPLE or "You receive loot: %sx%d."), counted = true },
+    { pattern = PatternFromFormat(LOOT_ITEM_PUSHED_SELF_MULTIPLE or "You receive item: %sx%d."), counted = true },
+    { pattern = PatternFromFormat(LOOT_ITEM_SELF or "You receive loot: %s."), counted = false },
+    { pattern = PatternFromFormat(LOOT_ITEM_PUSHED_SELF or "You receive item: %s."), counted = false },
+}
+
 local function OnLoot(link, count)
     if not tdb or not tdb.enabled then return end
     local entry = { link = link, retries = RESOLVE_RETRIES,
@@ -686,19 +706,22 @@ RefactorToastShared = {
 
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
--- RefactorCompare.lua loads first (see the .toc) and parses CHAT_MSG_LOOT
--- once for the whole addon; subscribe to its dispatch. Only if that file
--- somehow failed to load would this file need its own event — and with the
--- compare pipeline gone the toasts would miss upgrade data anyway, so
--- there's no fallback parser: no dispatcher, no toasts.
-if RefactorCompareShared and RefactorCompareShared.RegisterLootListener then
-    RefactorCompareShared.RegisterLootListener(OnLoot)
-end
+eventFrame:RegisterEvent("CHAT_MSG_LOOT")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
-    if event == "ADDON_LOADED" then
+    if event == "CHAT_MSG_LOOT" then
+        if not tdb or not tdb.enabled then return end
+        for _, p in ipairs(LOOT_SELF_PATTERNS) do
+            local itemString, count = arg1:match(p.pattern)
+            if itemString then
+                local link = itemString:match("|Hitem:.-|h%[.-%]|h")
+                if link then
+                    OnLoot(link, p.counted and tonumber(count) or 1)
+                end
+                return
+            end
+        end
+    elseif event == "ADDON_LOADED" then
         if arg1 ~= "Refactor" then return end
-        -- RefactorCompare.lua loads first and owns RefactorCompareDB; the
-        -- guard is only for load-order accidents.
         if type(RefactorCompareDB) ~= "table" then RefactorCompareDB = {} end
         if type(RefactorCompareDB.toast) ~= "table" then
             RefactorCompareDB.toast = {}

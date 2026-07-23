@@ -173,11 +173,13 @@ end
 local function BestReward()
     local n = GetNumQuestChoices() or 0
     if n < 2 then Dbg("choices=%d, nothing to decide", n) return nil end
-    local cmp = RefactorCompareShared
-    -- The gear half of the decision is the whole point; with the compare
-    -- feature off there's no upgrade test, and picking purely on gold would
+    -- Gear comparison lives in the separate Refactor Gear addon; read its
+    -- shared table at use time, never at load (addon order isn't ours).
+    local cmp = RefactorGearShared
+    -- The gear half of the decision is the whole point; without the compare
+    -- addon there's no upgrade test, and picking purely on gold would
     -- happily vendor an upgrade.
-    if not cmp then Dbg("RefactorCompareShared missing") return nil end
+    if not cmp then Dbg("Refactor Gear addon not installed") return nil end
     if not cmp.IsEnabled() then Dbg("gear comparison is disabled") return nil end
 
     local bestIdx, bestGain, tiedUpgrade

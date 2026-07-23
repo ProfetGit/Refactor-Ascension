@@ -124,10 +124,11 @@ do
     local function TryBagUpgrade(bag, slot)
         if not Qol("seamlessBagUpgrade") then return false end
         if bu then return false end -- a sequence is already running
-        -- Smart equip (RefactorCompare) may be mid-swap on its own
-        -- PickupContainerItem sequence; two concurrent shuffles desync
-        -- the cursor. Each side checks the other before arming.
-        local cs = RefactorCompareShared
+        -- Smart equip (the Refactor Gear addon, if installed) may be
+        -- mid-swap on its own PickupContainerItem sequence; two concurrent
+        -- shuffles desync the cursor. Each side checks the other before
+        -- arming.
+        local cs = RefactorGearShared
         if cs and cs.SmartEquipActive and cs.SmartEquipActive() then
             return false
         end

@@ -104,7 +104,10 @@ fastLootCVarWatcher:RegisterEvent("CVAR_UPDATE")
 fastLootCVarWatcher:SetScript("OnEvent", ReconcileFastLootCVar)
 
 local function InitQol()
-    if qdb or type(RefactorCompareDB) ~= "table" then return end
+    if qdb then return end
+    -- This file owns the saved variable now that the gear-compare files
+    -- (which used to create it) live in the separate Refactor Gear addon.
+    if type(RefactorCompareDB) ~= "table" then RefactorCompareDB = {} end
     if type(RefactorCompareDB.qol) ~= "table" then RefactorCompareDB.qol = {} end
     qdb = RefactorCompareDB.qol
     for k, v in pairs(QOL_DEFAULTS) do
@@ -123,6 +126,24 @@ local function InitQol()
                 " soulbinds the item, which destroys BoE sale value. Re-enable" ..
                 " it in /rfc -> Tweaks (bound items only, unless you also allow" ..
                 " tradeable items).")
+        end
+    end
+    -- One-time cleanup: gear comparison moved to the separate Refactor Gear
+    -- addon (which keeps its own saved variable), so every compare-owned key
+    -- here is dead weight — stat weight profiles alone are the biggest table
+    -- in the file. Listed explicitly rather than "keep a whitelist, drop the
+    -- rest": an unknown key is far more likely to be a Refactor setting from
+    -- a version this code doesn't know about than compare leftovers.
+    if not RefactorCompareDB.migratedGearSplit then
+        RefactorCompareDB.migratedGearSplit = true
+        for _, key in ipairs({
+            "enabled", "lootAlert", "bagIcons", "secondaryBagArrow",
+            "smartEquip", "minQuality", "armorTypes", "activeProfile",
+            "profiles", "charProfiles", "charAutoProfile",
+            "charManualProfile", "charArmorTypes", "charManualArmor",
+            "charSecondaryProfile", "hitCapRatio", "migratedArmorPerChar",
+        }) do
+            RefactorCompareDB[key] = nil
         end
     end
     ReconcileFastLootCVar()
@@ -184,13 +205,13 @@ RefactorQoL = {
     end,
 }
 
--- Bootstraps everything above once saved variables exist: this file loads
--- before RefactorCompare.lua creates RefactorCompareDB, so QoL init happens
--- at PLAYER_ENTERING_WORLD, not install time.
+-- Bootstraps everything above once saved variables exist: this file runs
+-- at load time, before the client has handed the addon its saved
+-- variables, so QoL init happens at PLAYER_ENTERING_WORLD.
 local core = CreateFrame("Frame")
 core:RegisterEvent("PLAYER_ENTERING_WORLD")
 core:SetScript("OnEvent", function()
-    InitQol() -- saved variables (and RefactorCompare's init) are done by now
+    InitQol() -- saved variables have been handed over by now
     ApplyErrorSpeech()
     -- The friends list is empty client-side until the server sends it;
     -- request it now so social.lua's trade-window whitelist can check it.

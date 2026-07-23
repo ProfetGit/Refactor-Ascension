@@ -1,13 +1,13 @@
 -- RefactorUI
 -- The addon's control panel: one window that manages every Refactor
--- feature — gear compare, stat weights, profiles, loot alerts & toasts,
--- interface tweaks — plus the minimap button that opens it.
+-- feature — loot toasts, the crowd-control alert and the interface
+-- tweaks — plus the minimap button that opens it. (Gear comparison is
+-- its own addon now, Refactor Gear, with its own window.)
 --
 -- All reads/writes go through the small tables the other files export
--- (RefactorCompareShared, RefactorToastShared, RefactorQoL); no compare
--- or toast logic lives here. Every change applies immediately (bag
--- arrows refresh, tweaks re-check their flag at use time), so there is
--- no Apply/OK step.
+-- (RefactorQoL, RefactorToastShared, RefactorCCShared); no feature logic
+-- lives here. Every change applies immediately (tweaks re-check their
+-- flag at use time), so there is no Apply/OK step.
 --
 -- Look: the DiamondMetal atlas frame border over a flat dark
 -- background, a header ribbon, red panel buttons, native checkbox and
@@ -41,10 +41,10 @@ local BORDER_SIZE = 32 -- display size of the -8x DiamondMetal border pieces
 local CENTER_RIGHT = INSET + DETAIL_W + 18
 local CONTENT_W = W_WIDTH - (INSET + SIDEBAR_W + PAD) - CENTER_RIGHT -- 484
 
-local function CS() return RefactorCompareShared end
+-- modules/core.lua creates and owns the saved variable; before it exists
+-- (very early login) every caller here treats nil as "still loading".
 local function DB()
-    local s = CS()
-    return s and s.GetDB and s.GetDB() or nil
+    return type(RefactorCompareDB) == "table" and RefactorCompareDB or nil
 end
 local function TDB()
     return RefactorToastShared and RefactorToastShared.GetDB() or nil
@@ -52,11 +52,6 @@ end
 
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor|r: " .. msg)
-end
-
-local function RefreshBags()
-    local s = CS()
-    if s and s.RefreshOpenBags then s.RefreshOpenBags() end
 end
 
 --------------------------------------------------------------------------
@@ -935,10 +930,10 @@ local pages = {}
 local currentKey
 
 -- "search" is a page too (results list), just never in the nav.
-local PAGE_ORDER = { "general", "weights", "loot", "tweaks" }
+local PAGE_ORDER = { "general", "loot", "tweaks" }
 local PAGE_TITLES = {
-    general = "General", weights = "Stat Weights",
-    loot = "Loot", tweaks = "Tweaks", search = "Search",
+    general = "General", loot = "Loot", tweaks = "Tweaks",
+    search = "Search",
 }
 
 local function NewPage(key)
@@ -978,9 +973,7 @@ end
 
 local function UpdateFooter()
     if not window then return end
-    local d = DB()
-    window.footer:SetText("Profile  |cffffffff"
-        .. (d and d.activeProfile or "?") .. "|r")
+    window.footer:SetText("|cffffffffQuality of life for Ascension|r")
 end
 
 local function SelectPage(key)
@@ -1004,102 +997,13 @@ end
 
 local function BuildGeneralPage()
     local p = NewPage("general")
-    p.blurb = "Master switches: gear compare, bag upgrade arrows, the quality " ..
-        "cutoff, armor-type filters and the minimap button.\n\nHover any option " ..
-        "to read about it here."
+    p.blurb = "The minimap button and version notices. Loot toasts have " ..
+        "their own page; every quality-of-life switch lives under Tweaks." ..
+        "\n\nHover any option to read about it here."
 
-    local y = Section(p, "Gear compare", 0, 0, CONTENT_W)
-    p:Track(MakeCheck(p, 0, y, CONTENT_W, "Enable gear compare",
-        "Master switch — verdicts, bag arrows, quest markers and loot alerts.",
-        function() return DB().enabled end,
-        function(v) DB().enabled = v; RefreshBags() end))
-    y = y - 28
-
-    p:Track(MakeCheck(p, 0, y, CONTENT_W, "Green arrows on bag upgrades",
-        "Marks bag items that beat your equipped gear under current weights.",
-        function() return DB().bagIcons end,
-        function(v) DB().bagIcons = v; RefreshBags() end))
-    y = y - 28
-
-    p:Track(MakeCheck(p, 0, y, CONTENT_W, "Blue arrows for secondary profile",
-        "Also marks bag items that beat your equipped gear under the " ..
-        "secondary profile's weights, top-left corner of the icon. Off by default.",
-        function() return DB().secondaryBagArrow end,
-        function(v) DB().secondaryBagArrow = v; RefreshBags() end))
-    y = y - 28
-
-    p:Track(MakeCheck(p, 0, y, CONTENT_W, "Smart equip rings, trinkets and weapons",
-        "Right-click equip replaces the weaker of the two equipped items " ..
-        "under current weights, instead of always the first slot. Needs " ..
-        "readable stats on both equipped items, or it leaves the click alone.",
-        function() return DB().smartEquip ~= false end,
-        function(v) DB().smartEquip = v end))
-    y = y - 36
-
-    -- Minimum quality: six swatches in item-quality colors. Qualities
-    -- below the pick render dim — the row shows the cutoff at a glance.
-    local qLabel = p:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    qLabel:SetPoint("TOPLEFT", 0, y - 3)
-    qLabel:SetText("Minimum quality")
-
-    local qHolder = CreateFrame("Frame", nil, p)
-    qHolder:SetPoint("TOPLEFT", 130, y)
-    qHolder:SetWidth(CONTENT_W - 130)
-    qHolder:SetHeight(20)
-    local qName = qHolder:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    qName:SetPoint("LEFT", 6 * 25 + 8, 0)
-    local qCells = {}
-    for q = 0, 5 do
-        local c = CreateFrame("Button", nil, qHolder)
-        c:SetWidth(18)
-        c:SetHeight(18)
-        c:SetPoint("LEFT", q * 25, 0)
-        local col = ITEM_QUALITY_COLORS[q]
-        SetFlat(c, { col.r * 0.85, col.g * 0.85, col.b * 0.85 }, C_BORDER)
-        c:SetScript("OnClick", function()
-            DB().minQuality = q
-            RefreshBags()
-            qHolder:Refresh()
-        end)
-        Explain(c, col.hex .. _G["ITEM_QUALITY" .. q .. "_DESC"] .. "|r",
-            "Items below the chosen quality are ignored — no verdicts, no arrows, no alerts.")
-        qCells[q] = c
-    end
-    qHolder.Refresh = function(self)
-        local sel = DB().minQuality or 0
-        for q, c in pairs(qCells) do
-            if q == sel then
-                c:SetAlpha(1)
-                c:SetBackdropBorderColor(ACCENT[1], ACCENT[2], ACCENT[3], 1)
-            else
-                c:SetAlpha(q < sel and 0.25 or 0.9)
-                c:SetBackdropBorderColor(0, 0, 0, 0.7)
-            end
-        end
-        local col = ITEM_QUALITY_COLORS[sel]
-        qName:SetText(col.hex .. _G["ITEM_QUALITY" .. sel .. "_DESC"] .. "|r")
-    end
-    p:Track(qHolder)
-    y = y - 36
-
-    y = Section(p, "Armor types considered", 0, y - 8, CONTENT_W)
-    local armorTip = "Unchecked armor types are never shown as upgrades. Only applies to " ..
-        "body armor — rings, trinkets, cloaks and weapons always count.\n\n" ..
-        "Saved per character and never changed for you: armor this character " ..
-        "can't actually wear is already filtered out by the item's own red " ..
-        "proficiency line, learned proficiencies included."
-    local armorTypes = { "Cloth", "Leather", "Mail", "Plate" }
-    for i, at in ipairs(armorTypes) do
-        p:Track(MakeCheck(p, (i - 1) * 100, y, 95, at, nil,
-            function() return CS().GetArmorType(at) end,
-            function(v) CS().SetArmorType(at, v); RefreshBags() end,
-            armorTip))
-    end
-    y = y - 30
-
-    y = Section(p, "Minimap", 0, y - 8, CONTENT_W)
+    local y = Section(p, "Minimap", 0, 0, CONTENT_W)
     p:Track(MakeCheck(p, 0, y, CONTENT_W, "Show minimap button",
-        "Left-click opens settings, right-click toggles compare, drag to move.",
+        "Left-click opens settings, drag to move it around the minimap.",
         function()
             local db = DB()
             return not (db.minimap and db.minimap.hide)
@@ -1121,582 +1025,6 @@ local function BuildGeneralPage()
         function(v) if RefactorQoL then RefactorQoL.Set("versionCheck", v) end end))
 end
 
---------------------------------------------------------------------------
--- Page: Stat Weights (scrollable — profile management, spec picker,
--- the weight grid, custom stats)
---------------------------------------------------------------------------
-
-local function BuildWeightsPage()
-    local p = NewPage("weights")
-    p.blurb = "Profiles, per-spec default weights, and the per-stat numbers " ..
-        "that drive every verdict, arrow and alert."
-
-    local scroll = CreateFrame("ScrollFrame", "RefactorUIWeightsScroll", p,
-        "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 0, 0)
-    scroll:SetPoint("BOTTOMRIGHT", -26, 0)
-    scroll:EnableMouseWheel(true)
-    scroll:SetScript("OnMouseWheel", function(self, delta)
-        local sb = _G[self:GetName() .. "ScrollBar"]
-        if sb then sb:SetValue(sb:GetValue() - delta * 40) end
-    end)
-    SkinMinimalScrollbar(scroll)
-
-    local INNER_W = CONTENT_W - 26
-    local child = CreateFrame("Frame", nil, scroll)
-    child:SetWidth(INNER_W)
-    child:SetHeight(600) -- corrected after the custom-stat list is laid out
-    child.pageKey = "weights" -- MakeCheck reads it off its direct parent
-    scroll:SetScrollChild(child)
-
-    local shared = CS()
-    local y = 0
-
-    -- Profile ---------------------------------------------------------------
-    -- Profiles ARE stat-weight sets, so they live on this page: a dropdown
-    -- to switch, popups to save-as / rename / delete.
-    y = Section(child, "Profile", 0, y, INNER_W)
-    SmallText(child, "A profile is a saved set of stat weights, shared account-wide. " ..
-        "Each character remembers which one it picked.", 0, y, INNER_W)
-    y = y - 30
-
-    local dd = MakeDropdown(child, 200)
-    dd:SetPoint("TOPLEFT", 0, y)
-    dd.itemsFn = function()
-        local d = DB()
-        if not d then return {} end
-        local names = {}
-        for n in pairs(d.profiles) do tinsert(names, n) end
-        table.sort(names)
-        local items = {}
-        for _, n in ipairs(names) do
-            tinsert(items, {
-                text = n,
-                checked = (d.activeProfile == n),
-                func = function()
-                    shared.SetActiveProfile(n)
-                    RefreshBags()
-                    Print("switched to profile '" .. n .. "'.")
-                    RefactorUI.Refresh()
-                end,
-            })
-        end
-        return items
-    end
-    dd.Refresh = function(self)
-        self:SetText(DB().activeProfile or "")
-    end
-    p:Track(dd)
-    y = y - 34
-
-    local saveAsBtn = MakeButton(child, 96, 22, "Save as...", function()
-        ShowPopup({
-            text = "Save current weights as:",
-            hasEditBox = true,
-            onAccept = function(name)
-                name = (name or ""):match("^%s*(.-)%s*$")
-                if name ~= "" then
-                    CS().SaveProfileAs(name)
-                    RefreshBags()
-                end
-            end,
-        })
-    end)
-    saveAsBtn:SetPoint("TOPLEFT", 2, y)
-    Explain(saveAsBtn, "Save as",
-        "Saves the current weights as a new profile and switches to it. " ..
-        "Reusing an existing name overwrites that profile.")
-
-    local renameBtn = MakeButton(child, 92, 22, "Rename...", function()
-        local current = DB().activeProfile
-        ShowPopup({
-            text = string.format("Rename profile '%s' to:", current),
-            hasEditBox = true,
-            editDefault = current,
-            editHighlight = true,
-            onAccept = function(name)
-                name = (name or ""):match("^%s*(.-)%s*$")
-                local s = CS()
-                if name ~= "" and s and s.RenameProfile then
-                    s.RenameProfile(current, name)
-                end
-            end,
-        })
-    end)
-    renameBtn:SetPoint("TOPLEFT", 104, y)
-    renameBtn.Refresh = function(self)
-        if DB().activeProfile == "Default" then self:Disable() else self:Enable() end
-    end
-    p:Track(renameBtn)
-    Explain(renameBtn, "Rename",
-        "Renames the active profile everywhere — every character pointing at it " ..
-        "follows along. Default and class-spec profiles keep their names " ..
-        "(auto-selection finds those by name); copy them with Save as instead.")
-
-    local deleteBtn = MakeButton(child, 80, 22, "Delete", function()
-        local name = DB().activeProfile
-        ShowPopup({
-            text = string.format("Delete profile '%s'?", name),
-            button1 = YES, button2 = NO,
-            onAccept = function()
-                CS().DeleteProfile(name)
-            end,
-        })
-    end)
-    deleteBtn:SetPoint("TOPLEFT", 202, y)
-    deleteBtn.Refresh = function(self)
-        if DB().activeProfile == "Default" then self:Disable() else self:Enable() end
-    end
-    p:Track(deleteBtn)
-    Explain(deleteBtn, "Delete profile",
-        "Deletes the active profile (asks first). Characters using it fall back " ..
-        "to Default.")
-    y = y - 38
-
-    -- Secondary verdict -----------------------------------------------------
-    -- Hybrid builds gear two roles at once: a second profile whose verdict
-    -- shows in blue alongside the active profile's green/red, on tooltips
-    -- and bag arrows both. Per-character, manual-only (auto-selection never
-    -- picks one), "None" turns it off.
-    y = Section(child, "Secondary verdict", 0, y, INNER_W)
-    SmallText(child, "Show a second profile's verdict in blue next to the active " ..
-        "profile's — for gearing two roles at the same time.", 0, y, INNER_W)
-    y = y - 30
-
-    local secDD = MakeDropdown(child, 200)
-    secDD:SetPoint("TOPLEFT", 0, y)
-    secDD.itemsFn = function()
-        local d = DB()
-        if not d then return {} end
-        local cur = shared.SecondaryProfileName and shared.SecondaryProfileName()
-        local items = {
-            { text = "None", checked = (cur == nil),
-              func = function() shared.SetSecondaryProfile(nil) end },
-        }
-        local names = {}
-        for n in pairs(d.profiles) do tinsert(names, n) end
-        table.sort(names)
-        for _, n in ipairs(names) do
-            -- The active profile is excluded: its verdict is already the
-            -- primary one, doubling it would be noise.
-            if n ~= d.activeProfile then
-                tinsert(items, {
-                    text = n,
-                    checked = (cur == n),
-                    func = function() shared.SetSecondaryProfile(n) end,
-                })
-            end
-        end
-        return items
-    end
-    secDD.Refresh = function(self)
-        local cur = shared.SecondaryProfileName and shared.SecondaryProfileName()
-        self:SetText(cur or "None")
-    end
-    p:Track(secDD)
-    Explain(secDD.click, "Secondary verdict",
-        "Picks a second profile whose upgrade verdict appears in blue alongside " ..
-        "the active profile's green/red one — on item tooltips (its own line) " ..
-        "and bag arrows (blue arrow, top-left corner). Blue arrow = upgrade for " ..
-        "the secondary profile.\n\n" ..
-        "|cffff8060Caveat: both verdicts compare against what you're currently " ..
-        "wearing. If your two roles use different gearsets, the secondary verdict " ..
-        "scores the hovered item against your worn gear through the secondary " ..
-        "profile's weights — read it as an estimate in that case.|r")
-    y = y - 38
-
-    -- Spec profiles --------------------------------------------------------
-    -- One button per spec of the player's class. Gearing role is a choice,
-    -- not a consequence of talents: a tank can keep collecting DPS gear by
-    -- picking the DPS spec here. Clicking counts as a deliberate profile
-    -- choice, so auto-selection won't fight it (/rfc auto hands control back).
-    local specs = shared.GetClassSpecs and shared.GetClassSpecs()
-    if specs and #specs > 0 then
-        y = Section(child, "Spec profiles", 0, y, INNER_W)
-        SmallText(child, "Default weights per spec of your class — pick the role " ..
-            "you're gearing for, it doesn't have to match your talents.", 0, y, INNER_W)
-        y = y - 30
-        for i, spec in ipairs(specs) do
-            local b = MakeButton(child, 102, 22, spec.label, function()
-                shared.SelectSpecProfile(spec.label)
-                RefreshBags()
-                RefactorUI.Refresh()
-            end)
-            b:SetPoint("TOPLEFT", (i - 1) % 4 * 107, y - math.floor((i - 1) / 4) * 26)
-            b.Refresh = function(self)
-                -- Active spec: keep the button lit, text white-hot.
-                if DB().activeProfile == spec.profileName then
-                    self:LockHighlight()
-                    self.text:SetTextColor(1, 1, 1)
-                else
-                    self:UnlockHighlight()
-                    self.text:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3])
-                end
-            end
-            p:Track(b)
-            Explain(b, spec.label,
-                "Switch to the '" .. spec.profileName .. "' profile (created from the " ..
-                "default weights for this spec if you haven't edited it)." ..
-                "\n\n|cff999999Fine-tune the numbers below afterwards — your edits are kept.|r")
-        end
-        y = y - math.ceil(#specs / 4) * 26 - 12
-    end
-
-    -- Hit cap --------------------------------------------------------------
-    -- Hit rating past the cap is wasted; below it, it's valuable. Per profile,
-    -- pick which cap applies (melee 8% / ranged 8% / spell 17%). The addon
-    -- then values hit at the profile's HIT weight up to the cap — measured
-    -- against the hit you already wear — and ~zero past it. Off = plain linear.
-    y = Section(child, "Hit cap", 0, y, INNER_W)
-    SmallText(child, "Value hit rating only until you're capped, counting the hit " ..
-        "you already wear. Reads your live rating — matches the character sheet's " ..
-        "hit X/Y display.", 0, y, INNER_W)
-    y = y - 34
-
-    local HITCAP_LABELS = { off = "Off", melee = "Melee (8%)", ranged = "Ranged (8%)", spell = "Spell (17%)", custom = "Custom" }
-    local hcDD = MakeDropdown(child, 160)
-    hcDD:SetPoint("TOPLEFT", 0, y)
-    hcDD.itemsFn = function()
-        local cur = (shared.GetHitCapMode and shared.GetHitCapMode()) or "off"
-        local items = {}
-        for _, m in ipairs({ "off", "melee", "ranged", "spell", "custom" }) do
-            tinsert(items, {
-                text = HITCAP_LABELS[m],
-                checked = (cur == m),
-                func = function()
-                    if shared.SetHitCapMode then shared.SetHitCapMode(m) end
-                    RefreshBags()
-                    RefactorUI.Refresh()
-                end,
-            })
-        end
-        return items
-    end
-    hcDD.Refresh = function(self)
-        local cur = (shared.GetHitCapMode and shared.GetHitCapMode()) or "off"
-        self:SetText(HITCAP_LABELS[cur] or "Off")
-    end
-    p:Track(hcDD)
-    Explain(hcDD.click, "Hit cap",
-        "Hit rating stops helping once you reach the cap. With this on, an item's " ..
-        "hit counts at the profile's Hit Rating weight up to the cap (given the hit " ..
-        "already on your other gear) and as worthless past it — so a capped character " ..
-        "stops seeing hit-heavy items as upgrades.\n\n" ..
-        "|cffffd200Never-miss caps|r (PvE raid boss / PvP player):\n" ..
-        "  Melee  - 8% PvE / 5% PvP\n" ..
-        "  Ranged - 8% PvE / 5% PvP\n" ..
-        "  Spell  - 17% PvE / 4% PvP\n" ..
-        "Pick the one your build uses to deal damage.\n\n" ..
-        "The checkbox below switches the scoring target between the PvE and " ..
-        "PvP cap — use it if you're gearing for PvP and want to stop valuing " ..
-        "hit past the lower PvP number.\n\n" ..
-        "The cap rating is read live from the game, so it tracks your level.\n\n" ..
-        "|cffffd200Custom|r: type your own target rating directly, skipping the " ..
-        "%→rating conversion above — use this if talent or racial flat-% hit " ..
-        "means your real cap is lower than the built-in number. Still needs a " ..
-        "melee/ranged/spell pick below, since the same rating converts to a " ..
-        "different % for each.\n\n" ..
-        "|cffff8060Note: only counts hit from gear (rating), matching the character " ..
-        "sheet's X/Y number - talent and racial hit isn't included by the built-in " ..
-        "percentages. Compares against your currently equipped gear.|r")
-
-    local hcReadout = child:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    hcReadout:SetPoint("TOPLEFT", 172, y - 6)
-    hcReadout.Refresh = function(self)
-        local info = shared.HitCapInfo and shared.HitCapInfo()
-        if not info or info.mode == "off" then
-            self:SetText("")
-            return
-        end
-        if info.cap then
-            local refStr = ""
-            if info.refCap then
-                local refLabel = info.pvp and "PvE" or "PvP"
-                refStr = string.format("  |cff999999(%s cap %d)|r",
-                    refLabel, math.floor(info.refCap + 0.5))
-            end
-            self:SetText(string.format("Current %d  /  Cap %d",
-                info.current or 0, math.floor(info.cap + 0.5)) .. refStr)
-        else
-            self:SetText("Current " .. (info.current or 0) ..
-                "  /  Cap —  (equip some hit to read the cap)")
-        end
-    end
-    p:Track(hcReadout)
-    y = y - 28
-
-    p:Track(MakeCheck(child, 0, y, INNER_W, "Target PvP cap (lower %)",
-        "Score against the PvP never-miss cap instead of the PvE one. " ..
-        "The other cap is shown in grey for reference.",
-        function() return shared.GetHitCapPvP and shared.GetHitCapPvP() or false end,
-        function(v) if shared.SetHitCapPvP then shared.SetHitCapPvP(v) end; RefreshBags(); RefactorUI.Refresh() end,
-        nil,
-        function()
-            local m = shared.GetHitCapMode and shared.GetHitCapMode() or "off"
-            return m ~= "off" and m ~= "custom"
-        end))
-    y = y - 30
-
-    -- Custom mode: a type picker (still needed for the rating conversion)
-    -- plus the target rating itself, typed directly.
-    local HITCAP_TYPE_LABELS = { melee = "Melee", ranged = "Ranged", spell = "Spell" }
-    local hcTypeLabel = SmallText(child, "Type", 0, y, 40)
-    p:Track(hcTypeLabel)
-    hcTypeLabel.Refresh = function(self)
-        local shown = (shared.GetHitCapMode and shared.GetHitCapMode()) == "custom"
-        if shown then self:Show() else self:Hide() end
-    end
-
-    local hcTypeDD = MakeDropdown(child, 100)
-    hcTypeDD:SetPoint("TOPLEFT", 40, y + 12)
-    hcTypeDD.itemsFn = function()
-        local cur = (shared.GetHitCapCustomType and shared.GetHitCapCustomType()) or "melee"
-        local items = {}
-        for _, t in ipairs({ "melee", "ranged", "spell" }) do
-            tinsert(items, {
-                text = HITCAP_TYPE_LABELS[t],
-                checked = (cur == t),
-                func = function()
-                    if shared.SetHitCapCustomType then shared.SetHitCapCustomType(t) end
-                    RefreshBags()
-                    RefactorUI.Refresh()
-                end,
-            })
-        end
-        return items
-    end
-    hcTypeDD.Refresh = function(self)
-        local shown = (shared.GetHitCapMode and shared.GetHitCapMode()) == "custom"
-        if shown then self:Show() else self:Hide() end
-        if shown then
-            local cur = (shared.GetHitCapCustomType and shared.GetHitCapCustomType()) or "melee"
-            self:SetText(HITCAP_TYPE_LABELS[cur] or "Melee")
-        end
-    end
-    p:Track(hcTypeDD)
-    Explain(hcTypeDD.click, "Custom cap type",
-        "Which combat table your typed rating targets — the same rating converts " ..
-        "to a different hit % for melee, ranged, and spell.")
-
-    local hcRatingLabel = SmallText(child, "Target rating", 148, y, 84)
-    p:Track(hcRatingLabel)
-    hcRatingLabel.Refresh = function(self)
-        local shown = (shared.GetHitCapMode and shared.GetHitCapMode()) == "custom"
-        if shown then self:Show() else self:Hide() end
-    end
-
-    local hcRatingEdit = MakeEdit(child, 60,
-        function() return shared.GetHitCapCustomRating and shared.GetHitCapCustomRating() end,
-        function(v) if shared.SetHitCapCustomRating then shared.SetHitCapCustomRating(v) end; RefreshBags(); RefactorUI.Refresh() end)
-    hcRatingEdit:SetPoint("TOPLEFT", 236, y + 12)
-    local hcRatingRefreshBase = hcRatingEdit.Refresh
-    hcRatingEdit.Refresh = function(self)
-        local shown = (shared.GetHitCapMode and shared.GetHitCapMode()) == "custom"
-        if shown then self:Show() else self:Hide() end
-        if shown then hcRatingRefreshBase(self) end
-    end
-    p:Track(hcRatingEdit)
-    Explain(hcRatingEdit, "Target rating",
-        "Your own hit-rating cap, computed with talents/racials already folded in. " ..
-        "0 or blank = cap unknown (treated the same as off until you set it).")
-    y = y - 30
-
-    -- Weight grid ----------------------------------------------------------
-    local sectionTop = y
-    y = Section(child, "Stat weights", 0, y, INNER_W)
-    SmallText(child, "score = stat amount × weight, summed. Weight 0 ignores the stat.",
-        0, y, INNER_W)
-    y = y - 18
-
-    -- Info icon: short label above only covers the formula. The tooltip
-    -- covers the rest of the pipeline players actually ask about — how the
-    -- % verdict is derived and why some items show no verdict at all.
-    local infoBtn = CreateFrame("Frame", nil, child)
-    infoBtn:SetWidth(20)
-    infoBtn:SetHeight(14)
-    infoBtn:SetPoint("TOPLEFT", 82, sectionTop - 3)
-    infoBtn:EnableMouse(true)
-    local infoText = infoBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    infoText:SetPoint("CENTER", 0, 0)
-    infoText:SetText("(?)")
-    Explain(infoBtn, "How verdicts are calculated",
-        "Each stat on an item is multiplied by its weight below and summed into a single " ..
-        "score (weapon DPS counts as its own pseudo-stat). Your hovered item's score is " ..
-        "compared against your currently equipped item(s) in that slot, and the % " ..
-        "difference is what shows as the verdict.\n\n" ..
-        "|cff9999ffExample: with Strength weight 1 and Stamina weight 1, an item with " ..
-        "+10 Strength and +5 Stamina scores 15. If your equipped item scores 12, the " ..
-        "new item shows as a +25% upgrade.|r")
-
-    local resetBtn = MakeButton(child, 130, 20, "Reset to defaults", function()
-        if shared.ResetActiveProfileWeights() then
-            RefreshBags()
-            RefactorUI.Refresh()
-        end
-    end)
-    resetBtn:SetPoint("TOPLEFT", INNER_W - 130, sectionTop)
-    p:Track(resetBtn)
-    Explain(resetBtn, "Reset to defaults",
-        "Discards your edits and restores this spec's default weights. Only works on " ..
-        "a class-spec profile, not a custom saved profile.")
-
-    local ROWS = 11
-    for i, s in ipairs(shared.STATS) do
-        local col = math.floor((i - 1) / ROWS)
-        local row = (i - 1) % ROWS
-        local x = col * 218
-        local ry = y - row * 26
-
-        local label = child:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        label:SetPoint("TOPLEFT", x, ry - 5)
-        label:SetText(s.label)
-        label.Refresh = function(self)
-            -- Grey out ignored stats so what feeds the score reads at a glance.
-            local w = shared.Weights()[s.key]
-            if not w or w == 0 then
-                self:SetTextColor(0.45, 0.45, 0.50)
-            else
-                self:SetTextColor(1, 1, 1)
-            end
-        end
-        p:Track(label)
-
-        local eb = MakeEdit(child, 52,
-            function() return shared.Weights()[s.key] end,
-            function(v)
-                shared.Weights()[s.key] = v
-                RefreshBags()
-                label:Refresh()
-            end)
-        eb:SetPoint("TOPLEFT", x + 150, ry)
-        Explain(eb, s.label, (s.tip or "") .. "\n\n|cff9999990 = ignore this stat.|r")
-        p:Track(eb)
-    end
-    y = y - ROWS * 26 - 10
-
-    -- Custom scanned stats ---------------------------------------------------
-    local customSectionTop = y
-    y = Section(child, "Custom scanned stats", 0, y, INNER_W)
-    SmallText(child,
-        "Ascension-only stats picked up while scanning score at the Unknown weight " ..
-        "until you give them their own value here.", 0, y, INNER_W)
-
-    local customInfoBtn = CreateFrame("Frame", nil, child)
-    customInfoBtn:SetWidth(20)
-    customInfoBtn:SetHeight(14)
-    customInfoBtn:SetPoint("TOPLEFT", 165, customSectionTop - 3)
-    customInfoBtn:EnableMouse(true)
-    local customInfoText = customInfoBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    customInfoText:SetPoint("CENTER", 0, 0)
-    customInfoText:SetText("(?)")
-    Explain(customInfoBtn, "Adding a custom stat weight",
-        "1. Hover the item and read the line exactly as it appears on the tooltip " ..
-        "(e.g. \"Vampirism\" or \"Fire Resistance\"). Case doesn't matter.\n" ..
-        "2. Type that wording into the box below, set a weight, click Add.\n" ..
-        "3. Any item carrying that line now scores it at your weight instead of Unknown.\n\n" ..
-        "|cff9999ffPercent effects (meta gem halves, \"3% Increased Critical Damage\", " ..
-        "percent Equip: lines) show up under a \"<name> %\" entry — add that exact name " ..
-        "including the trailing %.|r\n\n" ..
-        "|cff999999Same thing from chat: /rfc weight <stat name> <value>. Weight 0 makes " ..
-        "the addon ignore the stat entirely.|r")
-
-    y = y - 34
-    local customStartY = y
-
-    local emptyText = SmallText(child,
-        "None yet. Add one below using the stat's tooltip wording, e.g. \"vampirism\".",
-        0, customStartY, INNER_W)
-
-    local customRows = {}
-    local function GetCustomRow(i)
-        local r = customRows[i]
-        if not r then
-            r = CreateFrame("Frame", nil, child)
-            r:SetWidth(INNER_W)
-            r:SetHeight(22)
-
-            r.name = r:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            r.name:SetPoint("TOPLEFT", 0, -5)
-            r.name:SetWidth(230)
-            r.name:SetJustifyH("LEFT")
-
-            r.edit = MakeEdit(r, 52,
-                function()
-                    local cw = shared.ActiveProfile().customWeights
-                    return r.statName and cw[r.statName] or 0
-                end,
-                function(v)
-                    if r.statName then
-                        shared.ActiveProfile().customWeights[r.statName] = v
-                        RefreshBags()
-                    end
-                end)
-            r.edit:SetPoint("TOPLEFT", 240, 0)
-
-            r.remove = MakeButton(r, 20, 20, "×", function()
-                if r.statName then
-                    shared.ActiveProfile().customWeights[r.statName] = nil
-                    RefreshBags()
-                    RefactorUI.Refresh()
-                end
-            end)
-            r.remove:SetPoint("TOPLEFT", 300, 0)
-            Explain(r.remove, "Remove",
-                "Drop this custom weight — the stat falls back to the Unknown weight.")
-
-            customRows[i] = r
-        end
-        return r
-    end
-
-    -- Add row: stat name + weight + Add.
-    local addName = MakeEdit(child, 180)
-    local addValue = MakeEdit(child, 52)
-    local addBtn = MakeButton(child, 60, 20, "Add", function()
-        local name = (addName:GetText() or ""):match("^%s*(.-)%s*$"):lower()
-        if name == "" then return end
-        local v = tonumber(addValue:GetText()) or 0
-        shared.ActiveProfile().customWeights[name] = v
-        addName:SetText("")
-        addValue:SetText("")
-        addName:ClearFocus()
-        addValue:ClearFocus()
-        RefreshBags()
-        RefactorUI.Refresh()
-    end, true)
-    Explain(addBtn, "Add custom stat weight",
-        "Use the exact wording the stat has on item tooltips (case doesn't matter).")
-
-    p.OnRefresh = function(self)
-        local cw = shared.ActiveProfile().customWeights
-        local names = {}
-        for n in pairs(cw) do tinsert(names, n) end
-        table.sort(names)
-
-        for i, r in ipairs(customRows) do r:Hide() end
-        for i, n in ipairs(names) do
-            local r = GetCustomRow(i)
-            r.statName = n
-            r.name:SetText(n)
-            r.edit:Refresh()
-            r:ClearAllPoints()
-            r:SetPoint("TOPLEFT", 0, customStartY - (i - 1) * 24)
-            r:Show()
-        end
-
-        if #names == 0 then emptyText:Show() else emptyText:Hide() end
-
-        local addY = customStartY - #names * 24 - (#names == 0 and 20 or 4)
-        addName:ClearAllPoints()
-        addName:SetPoint("TOPLEFT", 0, addY)
-        addValue:ClearAllPoints()
-        addValue:SetPoint("TOPLEFT", 188, addY)
-        addBtn:ClearAllPoints()
-        addBtn:SetPoint("TOPLEFT", 248, addY)
-
-        child:SetHeight(-addY + 40)
-    end
-end
 
 --------------------------------------------------------------------------
 -- Page: Loot
@@ -1704,17 +1032,10 @@ end
 
 local function BuildLootPage()
     local p = NewPage("loot")
-    p.blurb = "What happens at the loot moment: chat lines for upgrades and " ..
-        "the animated loot toasts."
+    p.blurb = "The animated loot toasts: what they show and where they " ..
+        "appear."
 
-    local y = Section(p, "Chat alerts", 0, 0, CONTENT_W)
-    p:Track(MakeCheck(p, 0, y, CONTENT_W, "Announce upgrades in chat",
-        "Prints a chat line when fresh loot beats your equipped gear.",
-        function() return DB().lootAlert end,
-        function(v) DB().lootAlert = v end))
-    y = y - 36
-
-    y = Section(p, "Loot toasts", 0, y - 8, CONTENT_W)
+    local y = Section(p, "Loot toasts", 0, 0, CONTENT_W)
     p:Track(MakeCheck(p, 0, y, CONTENT_W, "Show loot toasts",
         "Popup for each looted item — upgrades glow green and linger.",
         function()
@@ -1970,9 +1291,9 @@ local function BuildTweaksPage()
         "questTurnIn")
     y = y - 28
     QolCheck(0, y, "Auto-pick quest rewards",
-        "Takes the reward that's the biggest upgrade under your stat weights; if none is an upgrade, takes the one with the highest sell value. Needs the gear comparison enabled. Skips the pick (leaving the window open) whenever the answer isn't clear-cut — an unreadable reward, an exact tie, or a reward your secondary profile wants. Hold Shift to decide yourself.",
+        "Takes the reward that's the biggest upgrade under your stat weights; if none is an upgrade, takes the one with the highest sell value. Needs the separate Refactor Gear addon installed and enabled. Skips the pick (leaving the window open) whenever the answer isn't clear-cut — an unreadable reward, an exact tie, or a reward your secondary profile wants. Hold Shift to decide yourself.",
         "questAutoReward", function()
-            return RefactorCompareShared and RefactorCompareShared.IsEnabled()
+            return RefactorGearShared and RefactorGearShared.IsEnabled()
         end)
     y = y - 28
     QolCheck(0, y, "Auto-pick quests from gossip",
@@ -2599,7 +1920,6 @@ local function BuildWindow()
     end
 
     BuildGeneralPage()
-    BuildWeightsPage()
     BuildLootPage()
     BuildTweaksPage()
     BuildSearchPage()
@@ -2608,7 +1928,7 @@ local function BuildWindow()
 end
 
 --------------------------------------------------------------------------
--- Public interface (used by RefactorCompare's /rfc and RefreshConfig)
+-- Public interface
 --------------------------------------------------------------------------
 
 RefactorUI = {}
@@ -2690,18 +2010,12 @@ local function PositionMinimapButton()
 end
 
 local function MinimapButtonTooltip(self)
-    local d = DB()
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
     GameTooltip:SetText("Refactor")
-    if d then
-        GameTooltip:AddLine("Profile: |cffffffff" .. (d.activeProfile or "?") .. "|r",
-            0.8, 0.8, 0.8)
-        GameTooltip:AddLine("Gear compare: "
-            .. (d.enabled and "|cff33ff99on|r" or "|cffff4040off|r"), 0.8, 0.8, 0.8)
-    end
+    GameTooltip:AddLine("Quality-of-life tweaks, loot toasts, CC alert",
+        0.8, 0.8, 0.8)
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine("Left-click: settings", 0.6, 0.6, 0.6)
-    GameTooltip:AddLine("Right-click: toggle gear compare", 0.6, 0.6, 0.6)
     GameTooltip:AddLine("Drag: move this button", 0.6, 0.6, 0.6)
     GameTooltip:Show()
 end
@@ -2758,19 +2072,7 @@ local function BuildMinimapButton()
     end)
 
     b:SetScript("OnClick", function(self, button)
-        if button == "RightButton" then
-            local d = DB()
-            if d then
-                d.enabled = not d.enabled
-                RefreshBags()
-                Print("gear compare "
-                    .. (d.enabled and "|cff00ff00enabled|r" or "|cffff4040disabled|r") .. ".")
-                RefactorUI.Refresh()
-                if GameTooltip:GetOwner() == self then MinimapButtonTooltip(self) end
-            end
-        else
-            RefactorUI.Toggle()
-        end
+        RefactorUI.Toggle()
     end)
     b:SetScript("OnEnter", MinimapButtonTooltip)
     b:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -2797,8 +2099,6 @@ eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
         if arg1 ~= "Refactor" then return end
-        -- RefactorCompare.lua loads (and registers) first, so its handler has
-        -- already created RefactorCompareDB by the time this one runs.
         RefactorUI.UpdateMinimapButton()
         self:UnregisterEvent("ADDON_LOADED")
     else
@@ -2806,3 +2106,25 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         self:UnregisterEvent("PLAYER_ENTERING_WORLD")
     end
 end)
+
+--------------------------------------------------------------------------
+-- Slash commands (they used to live in the gear-compare files, which are
+-- the separate Refactor Gear addon now). /rfg belongs to that addon.
+--------------------------------------------------------------------------
+
+SLASH_REFACTOR1 = "/rfc"
+SLASH_REFACTOR2 = "/refactor"
+SlashCmdList.REFACTOR = function(msg)
+    msg = (msg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if msg == "" or msg == "config" then
+        RefactorUI.Toggle()
+    elseif msg == "debug" then
+        local d = DB()
+        if not d then Print("still loading — try again in a second.") return end
+        d.debug = not d.debug
+        Print("debug " .. (d.debug and "on" or "off") .. ".")
+    else
+        Print("commands: /rfc (settings), /rfc debug. Gear comparison moved " ..
+            "to the separate Refactor Gear addon (|cffffff00/rfg|r).")
+    end
+end
