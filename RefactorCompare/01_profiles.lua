@@ -134,6 +134,8 @@ local DEFAULTS = {
     secondaryBagArrow = false, -- off by default: blue secondary-verdict arrow on bag icons
     smartEquip = true, -- right-click equip replaces the weaker of a slot pair
     minQuality = 2, -- ignore items below Uncommon so junk doesn't clutter tooltips
+    -- Legacy account-wide armor filter. Kept only as the migration source
+    -- for charArmorTypes below — nothing reads it for filtering any more.
     armorTypes = { Cloth = true, Leather = true, Mail = true, Plate = true },
     activeProfile = "Default",
     profiles = {
@@ -153,9 +155,18 @@ local DEFAULTS = {
     -- charProfiles can't be used for that, since it records auto picks and
     -- plain logins too. Cleared back to auto-managed by /rfc auto.
     charManualProfile = {},
-    -- charKey -> true once the player manually edits the General page's
-    -- armor-type checkboxes. Stops AutoApplyClassSpec from overwriting
-    -- their choice; cleared by /rfc auto like charManualProfile.
+    -- charKey -> { Cloth = bool, Leather = bool, Mail = bool, Plate = bool }.
+    -- Which armor types this character wants considered for upgrades. Per
+    -- character, because it's a preference about one character's gearing:
+    -- when this was one account-wide table, logging an alt rewrote it for
+    -- everybody (issue #26 — a Cloth alt stripped Plate/Mail off a
+    -- Starcaller). Nothing sets it automatically; armor the character
+    -- genuinely can't wear is already blocked by the red proficiency line
+    -- in the tooltip scan (03_scan.lua), which — unlike a hardcoded
+    -- per-class table — tracks proficiencies learned on Ascension.
+    charArmorTypes = {},
+    -- Dead since the auto armor override was removed (see charArmorTypes).
+    -- Left in defaults so old saves keep merging cleanly.
     charManualArmor = {},
     -- charKey -> profile name shown as a SECOND verdict (blue) alongside
     -- the active profile's on tooltips and bag arrows, for hybrid builds
@@ -203,6 +214,33 @@ local function CharKey()
     return UnitName("player") .. "-" .. GetRealmName()
 end
 
+local ARMOR_TYPE_NAMES = { "Cloth", "Leather", "Mail", "Plate" }
+
+-- This character's armor-type filter, created on first access. The
+-- account-wide table it replaces is inherited exactly ONCE, by whichever
+-- character is logged in when the upgraded addon first runs
+-- (migratedArmorPerChar, on the DB root like the other migration flags),
+-- so that character keeps what it had. Everyone after that starts from
+-- all four types on — the honest default, since armor a character truly
+-- can't wear is already blocked by the red proficiency line in the
+-- tooltip scan. Inheriting the old table for every new character would
+-- just re-import the account-wide bug it exists to fix.
+local function ArmorTypes()
+    local key = CharKey()
+    local t = RefactorCompareDB.charArmorTypes[key]
+    if not t then
+        t = {}
+        local legacy = not RefactorCompareDB.migratedArmorPerChar
+            and RefactorCompareDB.armorTypes
+        for _, at in ipairs(ARMOR_TYPE_NAMES) do
+            t[at] = not legacy or legacy[at] ~= false
+        end
+        RefactorCompareDB.charArmorTypes[key] = t
+        RefactorCompareDB.migratedArmorPerChar = true
+    end
+    return t
+end
+
 -- The profile supplying the second (blue) verdict, or nil: unset, pointing
 -- at a deleted profile, or the same as the active profile (identical
 -- verdicts would just be noise). Manual-only per character — see DEFAULTS.
@@ -243,6 +281,8 @@ C.MergeDefaults = MergeDefaults
 C.ActiveProfile = ActiveProfile
 C.Weights = Weights
 C.CharKey = CharKey
+C.ARMOR_TYPE_NAMES = ARMOR_TYPE_NAMES
+C.ArmorTypes = ArmorTypes
 C.SecondaryProfile = SecondaryProfile
 C.ActivateProfile = ActivateProfile
 C.SetActiveProfile = SetActiveProfile

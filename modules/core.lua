@@ -25,12 +25,6 @@ local QOL_DEFAULTS = {
     -- Picking a quest reward is irreversible, so this ships off and refuses
     -- to act on anything it can't fully read (see modules/quest.lua).
     questAutoReward = false, -- auto-pick the best reward choice (upgrade, else most gold)
-    fullMapWindow = false, -- fullscreen map as a movable window (no blackout)
-    mapZoom = true,        -- scroll to zoom/pan the world map (RefactorMap.lua)
-    mapClassIcons = true,  -- class-colored party/raid icons on the world map
-    mapCoords = false,     -- player + cursor coordinates on the world map
-    mapMoveFade = false,   -- fade the map window while the character moves
-    mapRevealFog = false,  -- show unexplored areas: reveal every sub-zone map overlay
     hideErrorText = true,  -- hide red UI error text ("Ability is not ready yet")
     muteErrorSpeech = true,-- silence "I can't do that yet" voice errors
     -- Companion to the silent-sound client patch (loose files under the
@@ -138,8 +132,7 @@ end
 -- Refactor module calls it directly as Qol("key"), the same bare call-site
 -- syntax the original monolithic Refactor.lua used internally. This file
 -- loads first (see Refactor.toc), so the global is always assigned before
--- any other module's runtime code — or worldmap_window.lua's immediate
--- Apply() call at the bottom of its own load — can call it.
+-- any other module's runtime code can call it.
 function Qol(key)
     if qdb and qdb[key] ~= nil then return qdb[key] end
     return QOL_DEFAULTS[key]
@@ -160,11 +153,6 @@ function Announce(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Refactor:|r " .. msg)
 end
 
--- Assigned by worldmap_window.lua (a separate file, loaded after this one);
--- left undeclared here (reads as nil until assigned) so RefactorQoL.Set
--- below can re-apply the flag while the map is open.
--- ApplyFullMapWindow
-
 -- Shared with RefactorUI.lua (the config window).
 RefactorQoL = {
     Get = Qol,
@@ -172,15 +160,10 @@ RefactorQoL = {
         InitQol()
         if qdb then qdb[key] = value and true or false end
         if key == "muteErrorSpeech" then ApplyErrorSpeech() end
-        if key == "fullMapWindow" and ApplyFullMapWindow then ApplyFullMapWindow() end
         if key == "fastLoot" then ApplyFastLootCVar() end
-        if key == "mapRevealFog" and RefactorFogShared and RefactorFogShared.Redraw then
-            RefactorFogShared.Redraw()
-        end
     end,
-    -- Restores every QoL flag to its shipped default. Position/scale saves
-    -- (map window, minimap button, CC alert) live outside qol and are
-    -- untouched.
+    -- Restores every QoL flag to its shipped default. Position saves
+    -- (minimap button, CC alert) live outside qol and are untouched.
     ResetDefaults = function()
         InitQol()
         if not qdb then return end
@@ -188,8 +171,6 @@ RefactorQoL = {
         for k, v in pairs(QOL_DEFAULTS) do qdb[k] = v end
         ApplyErrorSpeech()
         ApplyFastLootCVar()
-        if ApplyFullMapWindow then ApplyFullMapWindow() end
-        if RefactorFogShared and RefactorFogShared.Redraw then RefactorFogShared.Redraw() end
     end,
     -- Flips every QoL flag off in one click, so the player can then opt
     -- back into individual tweaks one at a time (the Pawn-style workflow
@@ -200,8 +181,6 @@ RefactorQoL = {
         for k in pairs(QOL_DEFAULTS) do qdb[k] = false end
         ApplyErrorSpeech()
         ApplyFastLootCVar()
-        if ApplyFullMapWindow then ApplyFullMapWindow() end
-        if RefactorFogShared and RefactorFogShared.Redraw then RefactorFogShared.Redraw() end
     end,
 }
 

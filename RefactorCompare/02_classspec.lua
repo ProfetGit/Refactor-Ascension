@@ -135,34 +135,18 @@ local CLASS_SPEC_WEIGHTS = {
     },
 }
 
--- Which armor types each class can wear (server-side rule, unrelated to
--- talent-spec stat weights — a class's DPS spec can favor Agility while
--- still only wearing leather). Same keys as CLASS_SPEC_WEIGHTS. Used by
--- AutoApplyClassSpec to auto-set the General page's armor-type filter so
--- e.g. Knight of Xoroth never shows Cloth as a viable upgrade.
-local ARMOR_TYPES_BY_CLASS = {
-    GUARDIAN          = { "Plate", "Mail" },
-    KNIGHT_OF_XOROTH  = { "Plate", "Mail" },
-    PRIMALIST         = { "Plate", "Mail" },
-    REAPER            = { "Plate", "Mail" },
-    STARCALLER        = { "Plate", "Mail" },
-    TEMPLAR           = { "Mail", "Leather" },
-    WITCH_HUNTER      = { "Mail", "Leather" },
-    TINKER            = { "Mail", "Leather" },
-    VENOMANCER        = { "Mail", "Leather" },
-    BARBARIAN         = { "Leather", "Cloth" },
-    BLOODMAGE         = { "Leather", "Cloth" },
-    FELSWORN          = { "Leather", "Cloth" },
-    RANGER            = { "Leather", "Cloth" },
-    WITCH_DOCTOR      = { "Leather", "Cloth" },
-    CHRONOMANCER      = { "Cloth" },
-    NECROMANCER       = { "Cloth" },
-    PYROMANCER        = { "Cloth" },
-    RUNEMASTER        = { "Cloth" },
-    STORMBRINGER      = { "Cloth" },
-    CULTIST           = { "Plate", "Cloth" },
-    SUN_CLERIC        = { "Plate", "Cloth" },
-}
+-- There is deliberately no per-class armor table here any more. One used
+-- to drive the General page's armor-type filter on every login, and it was
+-- wrong twice over (issue #26): it wrote an account-wide setting from a
+-- per-character rule, so logging a Cloth alt stripped Plate/Mail off a
+-- Starcaller for good, and its hardcoded class -> armor lists can't know
+-- about proficiencies learned on a classless server, so a Witch Doctor who
+-- had earned Mail kept having Mail switched back off. Neither is worth
+-- fixing, because the table never added information: the client renders an
+-- item's sub-type in red when you lack the proficiency, ScanItem reads that
+-- (IsHardRequirementText in 03_scan.lua) and CompareItem blocks the item as
+-- unusable before the armor filter is consulted at all. The filter is now
+-- purely a player preference, per character, set only from the checkboxes.
 
 -- CLASS_SPEC_WEIGHTS is keyed by the non-localized class token (UnitClass's
 -- 2nd return), guessed as the usual Blizzard convention (uppercase, spaces
@@ -174,10 +158,9 @@ local function NormalizeClassKey(name)
 end
 
 -- Returns the spec list, the DISPLAY class name (for profile names shown
--- to the player), and the normalized weights-table key that matched (for
--- lookups into tables sharing CLASS_SPEC_WEIGHTS' key shape, like
--- ARMOR_TYPES_BY_CLASS — indexing those with the display name silently
--- misses, which is how armor auto-apply was broken for every class).
+-- to the player), and the normalized weights-table key that matched — any
+-- further table keyed like CLASS_SPEC_WEIGHTS must be indexed with that
+-- key, never the display name, which silently misses.
 local function GetClassSpecList()
     local className, classToken = UnitClass("player")
     local key = classToken
@@ -366,7 +349,7 @@ end
 -- points exist.
 local function AutoApplyClassSpec()
     if not RefactorCompareDB then return end
-    local specList, className, classKey = GetClassSpecList()
+    local specList, className = GetClassSpecList()
     if not specList then
         if RefactorCompareDB.debug then
             Print("auto-profile: no weights for class '" .. tostring(UnitClass("player")) .. "'.")
@@ -395,28 +378,6 @@ local function AutoApplyClassSpec()
     specEntry = specEntry or specList[1]
 
     local charKey = CharKey()
-
-    -- Armor-type filter is a hard proficiency rule, not a stat-weight
-    -- preference, so it applies independently of whether the player picked
-    -- a custom weight profile — unless they've edited the checkboxes
-    -- themselves (charManualArmor, set by the UI setter below).
-    local armorList = ARMOR_TYPES_BY_CLASS[classKey]
-    if armorList and not RefactorCompareDB.charManualArmor[charKey] then
-        local wanted = {}
-        for _, t in ipairs(armorList) do wanted[t] = true end
-        local changed = false
-        for _, t in ipairs({ "Cloth", "Leather", "Mail", "Plate" }) do
-            if (RefactorCompareDB.armorTypes[t] or false) ~= (wanted[t] or false) then changed = true end
-        end
-        if changed then
-            for _, t in ipairs({ "Cloth", "Leather", "Mail", "Plate" }) do
-                RefactorCompareDB.armorTypes[t] = wanted[t] or false
-            end
-            Print("auto-selected armor type(s) " .. table.concat(armorList, "/") .. " for your class.")
-            C.RefreshConfig()
-            if C.RefreshOpenBags then C.RefreshOpenBags() end
-        end
-    end
 
     local manual = RefactorCompareDB.charManualProfile[charKey]
     if manual and manual ~= RefactorCompareDB.charAutoProfile[charKey] then

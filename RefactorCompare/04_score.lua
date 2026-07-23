@@ -7,6 +7,7 @@ local SLOTS_FOR_INVTYPE = C.SLOTS_FOR_INVTYPE
 local WEAPON_INVTYPES = C.WEAPON_INVTYPES
 local OFFHAND_DPS_FACTOR = C.OFFHAND_DPS_FACTOR
 local ARMOR_FILTERED_INVTYPES = C.ARMOR_FILTERED_INVTYPES
+local ArmorTypes = C.ArmorTypes
 local STAT_NAME_KEYS = C.STAT_NAME_KEYS
 local equippedCache = C.equippedCache
 local verdictCache = C.verdictCache
@@ -466,7 +467,7 @@ local function CompareItemUncached(link, bag, slot, invSlot, src)
 
     if ARMOR_FILTERED_INVTYPES[info.equipLoc]
         and info.itemType == "Armor"
-        and RefactorCompareDB.armorTypes[info.itemSubType] == false then
+        and ArmorTypes()[info.itemSubType] == false then
         return { status = "wrongarmor", context = info.itemSubType }
     end
 

@@ -251,10 +251,11 @@ SlashCmdList.REFACTORCOMPARE = function(msg)
         C.RefreshOpenBags()
         Print("bag upgrade icons " .. (RefactorCompareDB.bagIcons and "on" or "off") .. ".")
     elseif cmd == "auto" then
-        -- Forget this character's manual profile/armor choices and hand
-        -- control back to class/spec auto-selection.
+        -- Forget this character's manual profile choice and hand control
+        -- back to class/spec auto-selection. Armor types are deliberately
+        -- untouched: nothing auto-selects them any more, so there is no
+        -- automation to hand back to (see 02_classspec.lua).
         RefactorCompareDB.charManualProfile[CharKey()] = nil
-        RefactorCompareDB.charManualArmor[CharKey()] = nil
         AutoApplyClassSpec()
         C.RefreshOpenBags()
         C.RefreshConfig()

@@ -6,7 +6,7 @@ local STATS = C.STATS
 local Weights = C.Weights
 local ActiveProfile = C.ActiveProfile
 local SetActiveProfile = C.SetActiveProfile
-local CharKey = C.CharKey
+local ArmorTypes = C.ArmorTypes
 local GetClassSpecs = C.GetClassSpecs
 local SelectSpecProfile = C.SelectSpecProfile
 local ResetActiveProfileWeights = C.ResetActiveProfileWeights
@@ -118,12 +118,14 @@ RefactorCompareShared = {
     ResetActiveProfileWeights = ResetActiveProfileWeights,
     RefreshOpenBags = C.RefreshOpenBags,
     Print = Print,
-    -- Armor-type checkboxes go through this (not raw DB().armorTypes[at] =
-    -- v) so a manual edit is recorded and AutoApplyClassSpec stops
-    -- overwriting it. /rfc auto clears the flag again.
+    -- Armor-type checkboxes go through this pair rather than touching the
+    -- DB directly, so the config window doesn't need to know the filter
+    -- lives per character (see ArmorTypes in 01_profiles.lua).
+    GetArmorType = function(armorType)
+        return ArmorTypes()[armorType] ~= false
+    end,
     SetArmorType = function(armorType, value)
-        RefactorCompareDB.armorTypes[armorType] = value
-        RefactorCompareDB.charManualArmor[CharKey()] = true
+        ArmorTypes()[armorType] = value
     end,
 }
 

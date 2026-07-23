@@ -13,11 +13,8 @@ modules\loot.lua
 modules\quest.lua
 modules\social.lua
 modules\errors.lua
-modules\worldmap_window.lua
 modules\bag_upgrade.lua
 modules\version_check.lua
-RefactorMap.lua
-RefactorFog.lua
 RefactorCompare\01_profiles.lua
 RefactorCompare\02_classspec.lua
 RefactorCompare\03_scan.lua

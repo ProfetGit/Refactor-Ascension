@@ -1084,11 +1084,14 @@ local function BuildGeneralPage()
 
     y = Section(p, "Armor types considered", 0, y - 8, CONTENT_W)
     local armorTip = "Unchecked armor types are never shown as upgrades. Only applies to " ..
-        "body armor — rings, trinkets, cloaks and weapons always count."
+        "body armor — rings, trinkets, cloaks and weapons always count.\n\n" ..
+        "Saved per character and never changed for you: armor this character " ..
+        "can't actually wear is already filtered out by the item's own red " ..
+        "proficiency line, learned proficiencies included."
     local armorTypes = { "Cloth", "Leather", "Mail", "Plate" }
     for i, at in ipairs(armorTypes) do
         p:Track(MakeCheck(p, (i - 1) * 100, y, 95, at, nil,
-            function() return DB().armorTypes[at] ~= false end,
+            function() return CS().GetArmorType(at) end,
             function(v) CS().SetArmorType(at, v); RefreshBags() end,
             armorTip))
     end
@@ -1977,70 +1980,6 @@ local function BuildTweaksPage()
         "questGossip")
     y = y - 36
 
-    y = Section(child, "World map", 0, y - 8, INNER_W)
-    local fmOwner = RefactorFullMapShared and RefactorFullMapShared.Conflict
-        and RefactorFullMapShared.Conflict() or nil
-    QolCheck(0, y, "Full-size map as a movable window",
-        "The full map becomes the only mode: a scaled-down window with no black backdrop, and keyboard movement keeps working. Drag its title strip to move it; mousewheel there resizes."
-        .. (fmOwner and (" |cffff7f3fCurrently handled by " .. fmOwner
-            .. " — this setting has no effect while that addon is enabled.|r") or ""),
-        "fullMapWindow")
-    y = y - 28
-    do
-        local fm = RefactorFullMapShared
-        local minS = (fm and fm.MIN_SCALE) or 0.5
-        local maxS = (fm and fm.MAX_SCALE) or 1.0
-        local baseS = (fm and fm.BASE_SCALE) or 0.85
-        local label = child:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        label:SetPoint("TOPLEFT", 20, y - 5)
-        label:SetText("Window scale")
-        p:Track(label)
-        local slider = MakeSlider(child, "RefactorUIFullMapScaleSlider", 140,
-            minS, maxS, 0.05,
-            function() return fm and fm.GetScale() end,
-            function(v) if fm then fm.SetScale(v) end end,
-            baseS)
-        slider:SetPoint("TOPLEFT", 150, y - 3)
-        local desc = string.format(
-            "Size of the map window. 1.00 is the default size; the slider's own range is %.2f to %.2f. " ..
-            "Same value the mousewheel sets when dragging its title strip.",
-            minS / baseS, maxS / baseS)
-        Explain(slider, "Window scale", desc)
-        RegisterOption("Window scale", desc, child.pageKey)
-        p:Track(slider)
-        if not fm then slider:Disable() end
-    end
-    y = y - 36
-    -- Leatrix Maps ships the same zoom/class-icon port; RefactorMap stands
-    -- down while it's loaded (stacked hooks made quest markers drift on
-    -- zoom), so these two flags change nothing until Leatrix is disabled.
-    local leatrixNote = IsAddOnLoaded("Leatrix_Maps")
-        and " |cffff7f3fCurrently handled by Leatrix Maps — this setting has no effect while Leatrix Maps is enabled.|r"
-        or ""
-    QolCheck(0, y, "Scroll to zoom, drag to pan the map",
-        "Mousewheel over the map content zooms in/out; click and drag while zoomed in to pan. Ported from Magnify-WotLK."
-        .. leatrixNote,
-        "mapZoom", nil, true)
-    y = y - 28
-    QolCheck(0, y, "Class-colored party/raid icons",
-        "Party and raid members show as their class color instead of the default white dot."
-        .. leatrixNote,
-        "mapClassIcons")
-    y = y - 28
-    QolCheck(0, y, "Show map coordinates",
-        "Player and cursor coordinates in the bottom corners of the map.",
-        "mapCoords")
-    y = y - 28
-    QolCheck(0, y, "Fade map while moving",
-        "Dims the map window while your character is moving. Mouse over the map to see it fully again.",
-        "mapMoveFade")
-    y = y - 28
-    QolCheck(0, y, "Show unexplored areas",
-        "Clears the fog of war from every zone map, showing sub-zones you haven't discovered yet instead of leaving them blank."
-        .. leatrixNote,
-        "mapRevealFog")
-    y = y - 36
-
     y = Section(child, "Social", 0, y - 8, INNER_W)
     QolCheck(0, y, "Decline group invites",
         "Declines every party invite. Hold Shift as it arrives to accept manually.",
@@ -2706,13 +2645,48 @@ local function MinimapDB()
     return d.minimap
 end
 
+-- Minimap shape, by the same convention LibDBIcon uses: addons that make
+-- the minimap non-round (ElvUI among them) define a global GetMinimapShape.
+-- Anything other than "ROUND" is treated as a square — the corner-rounding
+-- variants ("SIDE-LEFT", "TRICORNER-*") only differ in which corners bulge,
+-- and clamping to the square perimeter lands on the edge either way.
+-- pcall'd: third-party implementations are ordinary addon code and do error.
+local function MinimapIsRound()
+    if type(GetMinimapShape) ~= "function" then return true end
+    local ok, shape = pcall(GetMinimapShape)
+    return not ok or shape == nil or shape == "ROUND"
+end
+
 local function PositionMinimapButton()
     local m = MinimapDB()
     if not (m and minimapButton) then return end
+    -- Stand down once something else owns the button: ElvUI/AddOnSkins-style
+    -- collector bars reparent minimap buttons into a row of their own, and
+    -- snapping it back to a minimap-relative point on every refresh would
+    -- fight that layout (same stand-down rule the bag hooks follow).
+    if minimapButton:GetParent() ~= Minimap then return end
+
+    -- Radius from the live minimap, not a constant: ElvUI resizes it, and a
+    -- hardcoded 80 then leaves the button floating inside the map or well
+    -- outside it. Stock 140px minimap gives 80, so default placement is
+    -- unchanged.
+    local r = (Minimap:GetWidth() / 2) + 10
     local angle = math.rad(m.angle or 205)
+    local x, y = math.cos(angle), math.sin(angle)
+    if MinimapIsRound() then
+        x, y = x * r, y * r
+    else
+        -- Project onto the square's edge, then clamp: overshooting by 1.5x
+        -- before the clamp is what keeps the button ON the edge for angles
+        -- between the corners instead of cutting the corner inside it.
+        x = math.max(-r, math.min(r, x * r * 1.5))
+        y = math.max(-r, math.min(r, y * r * 1.5))
+    end
+
+    -- Above ElvUI's minimap panels, which sit on top of the minimap itself.
+    minimapButton:SetFrameLevel(Minimap:GetFrameLevel() + 8)
     minimapButton:ClearAllPoints()
-    minimapButton:SetPoint("CENTER", Minimap, "CENTER",
-        math.cos(angle) * 80, math.sin(angle) * 80)
+    minimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
 end
 
 local function MinimapButtonTooltip(self)
@@ -2737,7 +2711,7 @@ local function BuildMinimapButton()
     b:SetWidth(31)
     b:SetHeight(31)
     b:SetFrameStrata("MEDIUM")
-    b:SetFrameLevel(8)
+    b:SetFrameLevel(8) -- re-derived from the minimap in PositionMinimapButton
     b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     b:RegisterForDrag("LeftButton")
     b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
@@ -2815,10 +2789,20 @@ end
 
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
+-- Minimap-skinning addons resize and reshape the minimap after ADDON_LOADED,
+-- so the radius read there can be the stock one. PLAYER_ENTERING_WORLD is the
+-- first point on this client where everyone else is done; reposition once
+-- more there, then stop listening.
+eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
-    if arg1 ~= "Refactor" then return end
-    -- RefactorCompare.lua loads (and registers) first, so its handler has
-    -- already created RefactorCompareDB by the time this one runs.
-    RefactorUI.UpdateMinimapButton()
-    self:UnregisterEvent("ADDON_LOADED")
+    if event == "ADDON_LOADED" then
+        if arg1 ~= "Refactor" then return end
+        -- RefactorCompare.lua loads (and registers) first, so its handler has
+        -- already created RefactorCompareDB by the time this one runs.
+        RefactorUI.UpdateMinimapButton()
+        self:UnregisterEvent("ADDON_LOADED")
+    else
+        RefactorUI.UpdateMinimapButton()
+        self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+    end
 end)

@@ -51,8 +51,6 @@ All individually toggleable on the Tweaks page:
 - **Quest automation** — auto-accept, auto turn-in, gossip/greeting picking
 - **Hide red error text** and mute the "I can't do that yet" voice line
 - **Mute the cast-deny fizzle sound** — needs the one-click client patch, see [Installation](#installation)
-- **World map** — scroll-to-zoom, click-drag pan, class-colored party/raid dots (ported from Magnify-WotLK); optional coords and fade-while-moving
-- **Fullscreen map** as a movable, resizable window instead of a blackout
 - **Auto-sell grays & auto-repair** at merchants (own money only)
 - **Auto-decline** party/duel/guild invites and stranger trades; **auto-accept** BG resurrections
 - **Quick invite** — Alt+Right-Click a player to invite
