@@ -30,7 +30,25 @@ AddDeny(ERR_OUT_OF_RUNES)               -- "Not enough runes"
 AddDeny(ERR_OUT_OF_HEALTH)              -- "Not enough health"
 AddDeny(SPELL_FAILED_NO_POWER)          -- "Not enough power"
 
-local DENY_SOUND = "Interface\\AddOns\\Refactor\\sounds\\FizzleHolyA.wav"
+-- PlaySoundFile has no volume/channel control on this client (no channel
+-- arg support, no per-sound volume param), so the replay would otherwise
+-- always play at full Master volume no matter what the SFX slider says.
+-- Approximated by shipping the same clip pre-attenuated at four gain tiers
+-- and picking the closest one to the live Sound_SFXVolume cvar.
+local DENY_SOUND_TIERS = {
+    { 0.3, "Interface\\AddOns\\Refactor\\sounds\\FizzleHolyA_20.wav" },
+    { 0.5, "Interface\\AddOns\\Refactor\\sounds\\FizzleHolyA_40.wav" },
+    { 0.7, "Interface\\AddOns\\Refactor\\sounds\\FizzleHolyA_60.wav" },
+    { 0.9, "Interface\\AddOns\\Refactor\\sounds\\FizzleHolyA_80.wav" },
+}
+local DENY_SOUND_FULL = "Interface\\AddOns\\Refactor\\sounds\\FizzleHolyA.wav"
+
+local function DenySoundForVolume(vol)
+    for _, tier in ipairs(DENY_SOUND_TIERS) do
+        if vol <= tier[1] then return tier[2] end
+    end
+    return DENY_SOUND_FULL
+end
 
 -- UIErrorsFrame owns UI_ERROR_MESSAGE; take the event over so the flag is
 -- read per message and toggling needs no /reload. Yellow UI_INFO_MESSAGE
@@ -41,8 +59,12 @@ local errText = CreateFrame("Frame")
 errText:RegisterEvent("UI_ERROR_MESSAGE")
 errText:SetScript("OnEvent", function(self, event, message)
     if message and DENY_LINES[message] and not Qol("muteDenySounds")
-        and PlaySoundFile then
-        PlaySoundFile(DENY_SOUND)
+        and PlaySoundFile
+        and GetCVar("Sound_EnableSFX") == "1" then
+        local vol = tonumber(GetCVar("Sound_SFXVolume")) or 1
+        if vol > 0 then
+            PlaySoundFile(DenySoundForVolume(vol), "SFX")
+        end
     end
     if Qol("hideErrorText") then return end
     -- Same color/hold values the default UI uses for error lines.
